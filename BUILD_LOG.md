@@ -298,3 +298,47 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
   leak-matrix coverage check is P1.8.
 - Next: test-writer for P1.6 (add the four tables to `TENANT_TABLES`, plus role gating, comment-author rule,
   approval append-only, composite/option FKs, column grants), then P1.7.
+
+## 2026-09-28 — P1.6 tests: analysis and collaboration (test-writer)
+
+- Did: extended `scripts/db-tenancy.test.ts` (same file, same `actAs` harness, one PGlite). File 172 -> 271 tests
+  (+99); suite 228 -> 327.
+  - Fixture: A has SWOT SA1 (decision-level, DA) and SA2 (OA1), risks RA1 (OA1) and RA2 (OA2), comment CMA on DA
+    written by the EDITOR, approvals APA (DA, rejected, admin) and APAF (DAF, approved, owner). B has one of each.
+  - `TENANT_TABLES` now also has swot_items/risks/comments/approvals: B reads 0 of A; B's UPDATE/DELETE of A's
+    rows has no effect (snapshot unchanged). The non-vacuous check asserts B's own row in each.
+  - Cross-tenant, all 4 tables: ws=B pointing at A's decision is refused by `<table>_decision_fkey` (risks use
+    the VALID pair OA1/DA, so only the decision FK can refuse); ws=A is refused by RLS; positive control that B
+    writes on its own decision. swot/risk on B's own decision naming A's option -> `<table>_option_fkey`; on DA
+    naming DAF's option -> same FK. B cannot re-point decision_id/workspace_id/option_id (permission denied).
+  - Roles: viewer reads all 4, inserts into swot/risks/approvals refused, updates/deletes 0 rows; viewer CAN
+    comment (author = created_by = self) and edit/delete it. editor/admin/owner write, edit, delete swot and risks.
+    owner/admin/viewer editing or deleting the editor's comment -> 0 rows; the author can; an author removed
+    from the workspace -> 0 rows. admin/owner approve (actor = created_by = self); editor/viewer refused by RLS.
+    Approvals append-only: update (verdict, reason, actor) and delete refused for owner/admin/editor/viewer.
+    Presetting author/actor/created_by/id or updating created_by/author/option_id/updated_at refused.
+  - Constraints (superuser): likelihood/impact 0/6 refused, 1/5 accepted, update to 6 refused, null refused;
+    risk without option (NOT NULL); quadrant s/w/o/t only (x, S, strength, '' refused); verdict approved|rejected
+    only; reason null/''/blank refused, 2000 ok, 2001 refused; comment null/''/blank refused, 4000 ok, 4001
+    refused, update to blank refused; text limits and position >= 0.
+  - Structure: exact columns (no exposure/score/generated column), PK id only, exact FK list (composite columns
+    - ON DELETE), one touch trigger each, RLS on, exactly 14 policies all TO authenticated (approvals
+      select+insert only), anon nothing, grantees authenticated+service_role only, approvals SELECT+INSERT only,
+      no table-wide INSERT/UPDATE, exact INSERT/UPDATE column grant list, service_role full DML.
+  - Defaults/cascades: created_by/author default to the caller, text fields default ''; updated_at bumps on all 4.
+    Option delete removes its risks and option-level SWOT (decision-level SWOT, comments, approvals kept);
+    decision delete removes DA's analysis rows only (APAF, B intact); workspace delete removes all of A's, B
+    intact; auth user delete nulls author/actor/created_by.
+- Mutation evidence (`DB_GATE_MIGRATIONS` -> mutated COPIES in the session scratchpad; `git diff supabase/` empty):
+  - m1a: added `approvals_update` policy only. 1 failed: "the policy set is exactly 14 ... select/insert ONLY".
+  - m1: that policy + `grant update (reason) on approvals`. 7 failed: policy set, approvals privs, exact column
+    grants, and "approvals are append-only" x4 roles.
+  - m2: `swot_items_option_fkey` made single-column `(option_id) -> options(id)`. 3 failed: FK list, "a swot_items
+    row on B's OWN decision naming A's option ...", "a SWOT item on DA naming DAF's option ...".
+  - m3: dropped `author = auth.uid()` from `comments_update` USING. 3 failed: owner/admin/viewer "cannot edit or
+    delete the editor's comment".
+  - m4: `approvals_insert` opened to editor. 1 failed: "editor cannot record an approval".
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exit 0; 327 tests.
+  No live Supabase; not pushed.
+- Bugs found: none. The migration behaves as DECISIONS.md "P1.6 analysis and collaboration choices" describes.
+- Next: P1.7 (AI, billing, audit, plans and seed).

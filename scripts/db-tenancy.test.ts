@@ -4,6 +4,9 @@
 // P1.5 — decision core: decisions, options, criteria, scores (isolation matrix, cross-tenant child
 //        inserts through the composite FKs, role gating, lifecycle columns, constraints, grants)
 //        and the enum match with src/lib/decision.ts.
+// P1.6 — analysis and collaboration: swot_items, risks, comments, approvals (isolation matrix,
+//        composite decision/option FKs, comment-author rule, append-only approvals, constraints,
+//        column grants, defaults, cascades).
 // The P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 TABLES, so
 // a later migration's tables extend the schema without rewriting P1.4's contract.
 //
@@ -76,11 +79,41 @@ const C = {
 const DECISION_TABLES = ['decisions', 'options', 'criteria', 'scores'] as const
 type DecisionTable = (typeof DECISION_TABLES)[number]
 
+// --- P1.6 analysis fixture ---------------------------------------------------------------------
+// Workspace A: SWOT SA1 (decision-level on DA, quadrant s) and SA2 (on OA1, quadrant w); risks
+// RA1 (OA1) and RA2 (OA2); comment CMA on DA written by the EDITOR; approvals APA (DA, rejected,
+// by admin) and APAF (DAF, approved, by owner). Workspace B: one of each on DB_/OB1 by ownerB.
+const SW = {
+  A1: '50000000-0000-4000-8000-0000000000a1',
+  A2: '50000000-0000-4000-8000-0000000000a2',
+  B1: '50000000-0000-4000-8000-0000000000b1',
+} as const
+const RK = {
+  A1: '60000000-0000-4000-8000-0000000000a1',
+  A2: '60000000-0000-4000-8000-0000000000a2',
+  B1: '60000000-0000-4000-8000-0000000000b1',
+} as const
+const CM = {
+  A: '70000000-0000-4000-8000-0000000000a1',
+  B: '70000000-0000-4000-8000-0000000000b1',
+} as const
+const AP = {
+  A: '80000000-0000-4000-8000-0000000000a1',
+  AF: '80000000-0000-4000-8000-0000000000af',
+  B: '80000000-0000-4000-8000-0000000000b1',
+} as const
+const ANALYSIS_TABLES = ['swot_items', 'risks', 'comments', 'approvals'] as const
+type AnalysisTable = (typeof ANALYSIS_TABLES)[number]
+
 /**
  * The isolation matrix. `ofA` selects workspace A's rows (rows UB must never see or change);
  * `probe` is a SET clause an attacker would try. P1.5+ appends its tables here.
  */
-const TENANT_TABLES: { table: Table | DecisionTable; ofA: string; probe: string }[] = [
+const TENANT_TABLES: {
+  table: Table | DecisionTable | AnalysisTable
+  ofA: string
+  probe: string
+}[] = [
   { table: 'workspaces', ofA: `id = '${WA}'`, probe: `name = 'pwned'` },
   { table: 'memberships', ofA: `workspace_id = '${WA}'`, probe: `role = 'viewer'` },
   { table: 'invites', ofA: `workspace_id = '${WA}'`, probe: `role = 'owner'` },
@@ -93,6 +126,10 @@ const TENANT_TABLES: { table: Table | DecisionTable; ofA: string; probe: string 
   { table: 'options', ofA: `workspace_id = '${WA}'`, probe: `name = 'pwned'` },
   { table: 'criteria', ofA: `workspace_id = '${WA}'`, probe: `weight = 0` },
   { table: 'scores', ofA: `workspace_id = '${WA}'`, probe: `value = 1` },
+  { table: 'swot_items', ofA: `workspace_id = '${WA}'`, probe: `text = 'pwned'` },
+  { table: 'risks', ofA: `workspace_id = '${WA}'`, probe: `likelihood = 1` },
+  { table: 'comments', ofA: `workspace_id = '${WA}'`, probe: `body = 'pwned'` },
+  { table: 'approvals', ofA: `workspace_id = '${WA}'`, probe: `reason = 'pwned'` },
 ]
 
 // --- harness -----------------------------------------------------------------------------------
@@ -268,6 +305,25 @@ beforeAll(async () => {
       ('${WA}', '${D.A}', '${O.A2}', '${C.A1}', 2, '${OLD}'),
       ('${WA}', '${D.AF}', '${O.F1}', '${C.F1}', 5, '${OLD}'),
       ('${WB}', '${D.B}', '${O.B1}', '${C.B1}', 3, '${OLD}');
+    insert into themis.swot_items (id, workspace_id, decision_id, option_id, quadrant, text,
+                                   created_by, updated_at) values
+      ('${SW.A1}', '${WA}', '${D.A}', null, 's', 'Decision-level strength', '${U.editorA}', '${OLD}'),
+      ('${SW.A2}', '${WA}', '${D.A}', '${O.A1}', 'w', 'A1 weakness', '${U.editorA}', '${OLD}'),
+      ('${SW.B1}', '${WB}', '${D.B}', '${O.B1}', 'o', 'B1 opportunity', '${U.ownerB}', '${OLD}');
+    insert into themis.risks (id, workspace_id, decision_id, option_id, title, likelihood, impact,
+                              created_by, updated_at) values
+      ('${RK.A1}', '${WA}', '${D.A}', '${O.A1}', 'Vendor lock-in', 4, 5, '${U.editorA}', '${OLD}'),
+      ('${RK.A2}', '${WA}', '${D.A}', '${O.A2}', 'Slow hiring', 2, 3, '${U.editorA}', '${OLD}'),
+      ('${RK.B1}', '${WB}', '${D.B}', '${O.B1}', 'B risk', 3, 3, '${U.ownerB}', '${OLD}');
+    insert into themis.comments (id, workspace_id, decision_id, body, author, created_by,
+                                 updated_at) values
+      ('${CM.A}', '${WA}', '${D.A}', 'Editor comment', '${U.editorA}', '${U.editorA}', '${OLD}'),
+      ('${CM.B}', '${WB}', '${D.B}', 'B comment', '${U.ownerB}', '${U.ownerB}', '${OLD}');
+    insert into themis.approvals (id, workspace_id, decision_id, verdict, reason, actor, created_by,
+                                  updated_at) values
+      ('${AP.A}', '${WA}', '${D.A}', 'rejected', 'Not ready', '${U.adminA}', '${U.adminA}', '${OLD}'),
+      ('${AP.AF}', '${WA}', '${D.AF}', 'approved', 'Go', '${U.ownerA}', '${U.ownerA}', '${OLD}'),
+      ('${AP.B}', '${WB}', '${D.B}', 'approved', 'B go', '${U.ownerB}', '${U.ownerB}', '${OLD}');
   `)
 }, 60_000)
 
@@ -688,6 +744,7 @@ describe('cross-workspace isolation: owner of B against workspace A', () => {
       expect(await s.count('invites', `workspace_id = '${WB}'`)).toBe(1)
       expect(await s.count('profiles', `user_id = '${U.ownerB}'`)).toBe(1)
       for (const t of DECISION_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
+      for (const t of ANALYSIS_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
     })
   })
 
@@ -1857,5 +1914,864 @@ describe('decision core (P1.5): cascades', () => {
         await s.count('decisions', `id = '${D.AF}' and created_by is null and approved_by is null`),
       ).toBe(1)
       expect(await s.count('decisions', `workspace_id = '${WA}'`)).toBe(2)
+    }))
+})
+
+// =================================================================================================
+// P1.6 analysis and collaboration — structure
+// =================================================================================================
+
+const notNullRefused = (o: Outcome, column: string) =>
+  !o.ok && o.error.includes('null value in column') && o.error.includes(column)
+
+/** Content hash of every analysis row of workspace `ws` (read as superuser). */
+const analysisSnapshot = async (s: Session, ws: string) => {
+  const out: Record<string, unknown> = {}
+  for (const t of ANALYSIS_TABLES) out[t] = await snapshot(s, t, `workspace_id = '${ws}'`)
+  return out
+}
+
+/** Every FK on the given themis tables as `t(cols)->ref(cols) ondelete`, sorted. */
+const fkList = async (tables: readonly string[]) => {
+  const cols = (rel: string, key: string) =>
+    `(select string_agg(a.attname, ',' order by k.ord)
+        from unnest(c.${key}) with ordinality k(n, ord)
+        join pg_attribute a on a.attrelid = c.${rel} and a.attnum = k.n)`
+  const r = await db.query<{ fk: string }>(
+    `select c.conrelid::regclass::text || '(' || ${cols('conrelid', 'conkey')} || ')->' ||
+            c.confrelid::regclass::text || '(' || ${cols('confrelid', 'confkey')} || ') ' ||
+            c.confdeltype::text as fk
+       from pg_constraint c
+      where c.contype = 'f' and c.conrelid::regclass::text = any ($1::text[])`,
+    [tables.map((t) => `themis.${t}`)],
+  )
+  return r.rows.map((x) => x.fk).sort()
+}
+
+describe('analysis (P1.6): table shapes and keys', () => {
+  it.each([
+    [
+      'swot_items',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'option_id:uuid',
+        'quadrant:text!',
+        'text:text!',
+        'position:smallint!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'risks',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'option_id:uuid!',
+        'title:text!',
+        'likelihood:smallint!',
+        'impact:smallint!',
+        'owner:text!',
+        'mitigation:text!',
+        'position:smallint!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'comments',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'body:text!',
+        'author:uuid',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'approvals',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'verdict:text!',
+        'reason:text!',
+        'actor:uuid',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+  ] as const)('themis.%s has the planned columns, types and NOT NULLs', async (t, want) => {
+    expect(await columnsOf(t)).toEqual(want)
+  })
+
+  it('risk exposure is never stored: no exposure/score column and no generated column in P1.6', async () => {
+    const r = await db.query<{ c: string }>(
+      `select c.relname || '.' || a.attname as c
+         from pg_attribute a join pg_class c on c.oid = a.attrelid
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])
+          and a.attnum > 0 and not a.attisdropped
+          and (a.attname ~* '(exposure|score|severity|rating)' or a.attgenerated <> '')`,
+      [[...ANALYSIS_TABLES]],
+    )
+    expect(r.rows.map((x) => x.c)).toEqual([])
+  })
+
+  it('each table is keyed by id alone, with no other unique key', async () => {
+    const r = await db.query<{ k: string }>(
+      `select c.conrelid::regclass::text || ' ' || c.contype::text || ' (' ||
+              (select string_agg(a.attname, ',' order by k.ord)
+                 from unnest(c.conkey) with ordinality k(n, ord)
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n) || ')' as k
+         from pg_constraint c
+        where c.contype in ('p', 'u') and c.conrelid::regclass::text = any ($1::text[])`,
+      [ANALYSIS_TABLES.map((t) => `themis.${t}`)],
+    )
+    expect(r.rows.map((x) => x.k).sort()).toEqual(
+      ANALYSIS_TABLES.map((t) => `themis.${t} p (id)`).sort(),
+    )
+  })
+
+  it('foreign keys: composite (decision_id, workspace_id) and (option_id, decision_id), exactly', async () => {
+    // c = cascade, n = set null. No row reaches workspaces or options by a single column.
+    expect(await fkList(ANALYSIS_TABLES)).toEqual(
+      [
+        'themis.swot_items(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.swot_items(option_id,decision_id)->themis.options(id,decision_id) c',
+        'themis.swot_items(created_by)->auth.users(id) n',
+        'themis.risks(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.risks(option_id,decision_id)->themis.options(id,decision_id) c',
+        'themis.risks(created_by)->auth.users(id) n',
+        'themis.comments(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.comments(author)->auth.users(id) n',
+        'themis.comments(created_by)->auth.users(id) n',
+        'themis.approvals(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.approvals(actor)->auth.users(id) n',
+        'themis.approvals(created_by)->auth.users(id) n',
+      ].sort(),
+    )
+  })
+
+  it.each(ANALYSIS_TABLES)('themis.%s has exactly one touch_updated_at trigger', async (t) => {
+    const r = await db.query<{ n: number }>(
+      `select count(*)::int as n from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+        where t.tgrelid = $1::regclass and not t.tgisinternal and p.proname = 'touch_updated_at'`,
+      [`themis.${t}`],
+    )
+    expect(r.rows[0].n).toBe(1)
+  })
+})
+
+describe('analysis (P1.6): RLS, policies and grants', () => {
+  it.each(ANALYSIS_TABLES)('RLS is enabled on themis.%s', async (t) => {
+    const r = await db.query<{ on: boolean }>(
+      `select relrowsecurity as on from pg_class where oid = $1::regclass`,
+      [`themis.${t}`],
+    )
+    expect(r.rows[0].on).toBe(true)
+  })
+
+  it('the policy set is exactly 14, all TO authenticated; approvals have select/insert ONLY', async () => {
+    const r = await db.query<{ p: string }>(
+      `select c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' || p.polroles::regrole[]::text as p
+         from pg_policy p join pg_class c on c.oid = p.polrelid
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])`,
+      [[...ANALYSIS_TABLES]],
+    )
+    const verbs: [string, string][] = [
+      ['select', 'r'],
+      ['insert', 'a'],
+      ['update', 'w'],
+      ['delete', 'd'],
+    ]
+    const want = [
+      ...(['swot_items', 'risks', 'comments'] as const).flatMap((t) =>
+        verbs.map(([verb, cmd]) => `${t}.${t}_${verb} ${cmd} {authenticated}`),
+      ),
+      'approvals.approvals_select r {authenticated}',
+      'approvals.approvals_insert a {authenticated}',
+    ]
+    expect(want).toHaveLength(14)
+    expect(r.rows.map((x) => x.p).sort()).toEqual(want.sort())
+  })
+
+  it.each(ANALYSIS_TABLES)('anon holds no privilege (table or column) on themis.%s', async (t) => {
+    expect(await privsOf('anon', t)).toEqual([])
+  })
+
+  it.each(ANALYSIS_TABLES)(
+    'themis.%s is granted to authenticated and service_role only',
+    async (t) => {
+      const r = await db.query<{ g: string }>(
+        `select distinct grantee as g from information_schema.role_table_grants
+          where table_schema = 'themis' and table_name = $1
+         union
+         select distinct grantee from information_schema.column_privileges
+          where table_schema = 'themis' and table_name = $1
+         order by 1`,
+        [t],
+      )
+      expect(r.rows.map((x) => x.g).filter((g) => g !== 'postgres')).toEqual([
+        'authenticated',
+        'service_role',
+      ])
+    },
+  )
+
+  it('authenticated: approvals are SELECT+INSERT only; the rest SELECT/INSERT/UPDATE/DELETE', async () => {
+    for (const t of ['swot_items', 'risks', 'comments'])
+      expect(await privsOf('authenticated', t), t).toEqual(['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
+    expect(await privsOf('authenticated', 'approvals')).toEqual(['SELECT', 'INSERT'])
+    for (const t of ANALYSIS_TABLES) {
+      const [w] = (
+        await db.query<{ ins: boolean; upd: boolean }>(
+          `select has_table_privilege('authenticated', $1, 'INSERT') as ins,
+                  has_table_privilege('authenticated', $1, 'UPDATE') as upd`,
+          [`themis.${t}`],
+        )
+      ).rows
+      expect(w, t).toEqual({ ins: false, upd: false })
+    }
+  })
+
+  it('authenticated INSERT/UPDATE column grants are exactly the planned set', async () => {
+    const cols = await db.query<{ c: string }>(
+      `select table_name || '.' || column_name || ' ' || privilege_type as c
+         from information_schema.column_privileges
+        where table_schema = 'themis' and grantee = 'authenticated'
+          and privilege_type in ('INSERT', 'UPDATE') and table_name = any ($1::text[])`,
+      [[...ANALYSIS_TABLES]],
+    )
+    const ins = (t: string, cs: string[]) => cs.map((c) => `${t}.${c} INSERT`)
+    const upd = (t: string, cs: string[]) => cs.map((c) => `${t}.${c} UPDATE`)
+    // Never client-writable: id, created_by, author, actor, created_at, updated_at.
+    // Never client-updatable: workspace_id, decision_id, option_id.
+    expect(cols.rows.map((r) => r.c).sort()).toEqual(
+      [
+        ...ins('swot_items', [
+          'workspace_id',
+          'decision_id',
+          'option_id',
+          'quadrant',
+          'text',
+          'position',
+        ]),
+        ...upd('swot_items', ['quadrant', 'text', 'position']),
+        ...ins('risks', [
+          'workspace_id',
+          'decision_id',
+          'option_id',
+          'title',
+          'likelihood',
+          'impact',
+          'owner',
+          'mitigation',
+          'position',
+        ]),
+        ...upd('risks', ['title', 'likelihood', 'impact', 'owner', 'mitigation', 'position']),
+        ...ins('comments', ['workspace_id', 'decision_id', 'body']),
+        ...upd('comments', ['body']),
+        ...ins('approvals', ['workspace_id', 'decision_id', 'verdict', 'reason']),
+      ].sort(),
+    )
+  })
+
+  it('service_role has full DML on the four analysis tables', async () => {
+    for (const t of ANALYSIS_TABLES)
+      expect(await privsOf('service_role', t), t).toEqual(
+        expect.arrayContaining(['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
+      )
+  })
+})
+
+// =================================================================================================
+// P1.6 analysis and collaboration — behaviour
+// =================================================================================================
+
+describe('analysis (P1.6): visibility', () => {
+  it.each(ANALYSIS_TABLES)('anon cannot read themis.%s', (t) =>
+    actAs(ANON, async (s) => {
+      expect(refused(await s.attempt(`select * from themis.${t}`))).toBe(true)
+    }),
+  )
+
+  it('anon cannot post a comment or record an approval', () =>
+    actAs(ANON, async (s) => {
+      for (const sql of [
+        `insert into themis.comments (workspace_id, decision_id, body) values ('${WA}', '${D.A}', 'x')`,
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason)
+           values ('${WA}', '${D.A}', 'approved', 'x')`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+
+  it('a viewer of A reads all four tables of A and nothing of B', () =>
+    actAs(U.viewerA, async (s) => {
+      expect(await s.count('swot_items')).toBe(2)
+      expect(await s.count('risks')).toBe(2)
+      expect(await s.count('comments')).toBe(1)
+      expect(await s.count('approvals')).toBe(2)
+      for (const t of ANALYSIS_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(0)
+    }))
+
+  it('a user with no workspace sees no analysis rows', () =>
+    actAs(U.loner, async (s) => {
+      for (const t of ANALYSIS_TABLES) expect(await s.count(t), t).toBe(0)
+    }))
+})
+
+/**
+ * An insert into `t` with the given (workspace_id, decision_id, option_id); comments and approvals
+ * have no option. Every other column is valid, so only RLS or a foreign key can refuse it.
+ */
+const analysisInsert = (
+  s: Session,
+  t: AnalysisTable,
+  ws: string,
+  decision: string,
+  option: string,
+) => {
+  switch (t) {
+    case 'swot_items':
+      return s.attempt(
+        `insert into themis.swot_items (workspace_id, decision_id, option_id, quadrant, text)
+         values ($1, $2, $3, 't', 'x')`,
+        [ws, decision, option],
+      )
+    case 'risks':
+      return s.attempt(
+        `insert into themis.risks (workspace_id, decision_id, option_id, title, likelihood, impact)
+         values ($1, $2, $3, 'x', 3, 3)`,
+        [ws, decision, option],
+      )
+    case 'comments':
+      return s.attempt(
+        `insert into themis.comments (workspace_id, decision_id, body) values ($1, $2, 'x')`,
+        [ws, decision],
+      )
+    case 'approvals':
+      return s.attempt(
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason)
+         values ($1, $2, 'approved', 'x')`,
+        [ws, decision],
+      )
+  }
+}
+
+describe('analysis (P1.6): cross-tenant writes by the owner of B', () => {
+  // (OA1, DA) is a VALID option/decision pair, so for a ws=B row only the composite decision FK
+  // stands between B and A's decision.
+  it.each(ANALYSIS_TABLES)(
+    "a %s row claiming workspace B but pointing at A's decision is refused by the composite FK",
+    (t) =>
+      actAs(U.ownerB, async (s) => {
+        const before = await analysisSnapshot(s, WA)
+        const o = await analysisInsert(s, t, WB, D.A, O.A1)
+        expect(fkRefused(o, `${t}_decision_fkey`), JSON.stringify(o)).toBe(true)
+        expect(await analysisSnapshot(s, WA)).toEqual(before)
+      }),
+  )
+
+  it.each(ANALYSIS_TABLES)('a %s row claiming workspace A is refused by RLS', (t) =>
+    actAs(U.ownerB, async (s) => {
+      const before = await analysisSnapshot(s, WA)
+      const o = await analysisInsert(s, t, WA, D.A, O.A1)
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates row-level security/)
+      expect(await analysisSnapshot(s, WA)).toEqual(before)
+    }),
+  )
+
+  it.each(ANALYSIS_TABLES)('positive control: B writes a %s row on its own decision', (t) =>
+    actAs(U.ownerB, async (s) => {
+      expect(await analysisInsert(s, t, WB, D.B, O.B1)).toEqual({ ok: true, affected: 1 })
+    }),
+  )
+
+  it.each([['swot_items'], ['risks']] as const)(
+    "a %s row on B's OWN decision naming A's option is refused by the option FK",
+    (t) =>
+      actAs(U.ownerB, async (s) => {
+        const before = await analysisSnapshot(s, WA)
+        const o = await analysisInsert(s, t, WB, D.B, O.A1)
+        expect(fkRefused(o, `${t}_option_fkey`), JSON.stringify(o)).toBe(true)
+        expect(await analysisSnapshot(s, WA)).toEqual(before)
+      }),
+  )
+
+  it('B cannot re-point its own rows at A (tenancy and option keys are not updatable)', () =>
+    actAs(U.ownerB, async (s) => {
+      for (const sql of [
+        `update themis.swot_items set decision_id = '${D.A}' where id = '${SW.B1}'`,
+        `update themis.swot_items set workspace_id = '${WA}' where id = '${SW.B1}'`,
+        `update themis.swot_items set option_id = '${O.A1}' where id = '${SW.B1}'`,
+        `update themis.risks set decision_id = '${D.A}' where id = '${RK.B1}'`,
+        `update themis.risks set workspace_id = '${WA}' where id = '${RK.B1}'`,
+        `update themis.risks set option_id = '${O.A1}' where id = '${RK.B1}'`,
+        `update themis.comments set decision_id = '${D.A}' where id = '${CM.B}'`,
+        `update themis.comments set workspace_id = '${WA}' where id = '${CM.B}'`,
+        `update themis.approvals set decision_id = '${D.A}' where id = '${AP.B}'`,
+        `update themis.approvals set workspace_id = '${WA}' where id = '${AP.B}'`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+})
+
+describe('analysis (P1.6): an item cannot name an option of another decision', () => {
+  const swot = (s: Session, decision: string, option: string | null) =>
+    s.attempt(
+      `insert into themis.swot_items (workspace_id, decision_id, option_id, quadrant, text)
+       values ($1, $2, $3, 's', 'x')`,
+      [WA, decision, option],
+    )
+  const risk = (s: Session, decision: string, option: string) =>
+    s.attempt(
+      `insert into themis.risks (workspace_id, decision_id, option_id, title, likelihood, impact)
+       values ($1, $2, $3, 'x', 1, 1)`,
+      [WA, decision, option],
+    )
+
+  it('positive control: an editor adds option-level and decision-level SWOT and a risk on DA', () =>
+    actAs(U.editorA, async (s) => {
+      expect(await swot(s, D.A, O.A2)).toEqual({ ok: true, affected: 1 })
+      expect(await swot(s, D.A, null)).toEqual({ ok: true, affected: 1 })
+      expect(await risk(s, D.A, O.A2)).toEqual({ ok: true, affected: 1 })
+    }))
+
+  it("a SWOT item on DA naming DAF's option is refused by swot_items_option_fkey", () =>
+    actAs(U.editorA, async (s) => {
+      const o = await swot(s, D.A, O.F1)
+      expect(fkRefused(o, 'swot_items_option_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+
+  it("a risk on DA naming DAF's option is refused by risks_option_fkey", () =>
+    actAs(U.editorA, async (s) => {
+      const o = await risk(s, D.A, O.F1)
+      expect(fkRefused(o, 'risks_option_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+})
+
+describe('analysis (P1.6): role gating inside workspace A', () => {
+  it('viewer cannot write SWOT, risks or approvals: inserts refused, updates/deletes touch 0 rows', () =>
+    actAs(U.viewerA, async (s) => {
+      const before = await analysisSnapshot(s, WA)
+      for (const sql of [
+        `insert into themis.swot_items (workspace_id, decision_id, quadrant, text) values ('${WA}', '${D.A}', 's', 'v')`,
+        `insert into themis.risks (workspace_id, decision_id, option_id, title, likelihood, impact)
+           values ('${WA}', '${D.A}', '${O.A1}', 'v', 1, 1)`,
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason)
+           values ('${WA}', '${D.A}', 'approved', 'v')`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+      for (const sql of [
+        `update themis.swot_items set text = 'v' where id = '${SW.A1}'`,
+        `update themis.risks set likelihood = 1 where id = '${RK.A1}'`,
+        `delete from themis.swot_items where workspace_id = '${WA}'`,
+        `delete from themis.risks where workspace_id = '${WA}'`,
+      ])
+        expect(await s.attempt(sql), sql).toEqual({ ok: true, affected: 0 })
+      expect(await analysisSnapshot(s, WA)).toEqual(before)
+    }))
+
+  it('viewer CAN post a comment, recorded in their own name, and edit/delete it', () =>
+    actAs(U.viewerA, async (s) => {
+      const [c] = await s.rows<Row>(
+        `insert into themis.comments (workspace_id, decision_id, body)
+         values ($1, $2, 'Viewer thought') returning id, author, created_by`,
+        [WA, D.A],
+      )
+      expect(c).toMatchObject({ author: U.viewerA, created_by: U.viewerA })
+      expect(
+        await s.attempt(`update themis.comments set body = 'Edited' where id = $1`, [c.id]),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.attempt(`delete from themis.comments where id = $1`, [c.id])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+    }))
+
+  it.each([
+    ['editor', U.editorA],
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s writes, edits and deletes SWOT items and risks', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const [sw] = await s.rows<{ id: string }>(
+        `insert into themis.swot_items (workspace_id, decision_id, option_id, quadrant, text, position)
+         values ($1, $2, $3, 'o', 'Opp', 1) returning id`,
+        [WA, D.A, O.A2],
+      )
+      const [rk] = await s.rows<{ id: string }>(
+        `insert into themis.risks (workspace_id, decision_id, option_id, title, likelihood, impact,
+                                   owner, mitigation, position)
+         values ($1, $2, $3, 'Risk', 5, 5, 'Vendor', 'Contract', 1) returning id`,
+        [WA, D.A, O.A2],
+      )
+      for (const sql of [
+        `update themis.swot_items set quadrant = 't', text = 'Threat', position = 2 where id = '${sw.id}'`,
+        `update themis.risks set title = 'R', likelihood = 1, impact = 2, owner = 'o', mitigation = 'm',
+           position = 3 where id = '${rk.id}'`,
+        `update themis.swot_items set text = 'fixture edit' where id = '${SW.A1}'`,
+        `delete from themis.swot_items where id = '${sw.id}'`,
+        `delete from themis.risks where id = '${rk.id}'`,
+        `delete from themis.risks where id = '${RK.A2}'`,
+      ])
+        expect(await s.attempt(sql), sql).toEqual({ ok: true, affected: 1 })
+    }),
+  )
+
+  it.each([
+    ['owner', U.ownerA],
+    ['admin', U.adminA],
+    ['viewer', U.viewerA],
+  ])("%s cannot edit or delete the editor's comment (0 rows)", (_r, uid) =>
+    actAs(uid, async (s) => {
+      const before = await snapshot(s, 'comments', `id = '${CM.A}'`)
+      expect(
+        await s.attempt(`update themis.comments set body = 'Tampered' where id = $1`, [CM.A]),
+      ).toEqual({ ok: true, affected: 0 })
+      expect(await s.attempt(`delete from themis.comments where id = $1`, [CM.A])).toEqual({
+        ok: true,
+        affected: 0,
+      })
+      expect(await snapshot(s, 'comments', `id = '${CM.A}'`)).toEqual(before)
+    }),
+  )
+
+  it('the author edits and deletes their own comment', () =>
+    actAs(U.editorA, async (s) => {
+      expect(
+        await s.attempt(`update themis.comments set body = 'Revised' where id = $1`, [CM.A]),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('comments', `id = '${CM.A}' and body = 'Revised'`)).toBe(1)
+      expect(await s.attempt(`delete from themis.comments where id = $1`, [CM.A])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+    }))
+
+  it('an author removed from the workspace can no longer edit or delete their comment', () =>
+    actAs(U.editorA, async (s) => {
+      await s.sudo(() =>
+        s.rows(`delete from themis.memberships where workspace_id = $1 and user_id = $2`, [
+          WA,
+          U.editorA,
+        ]),
+      )
+      expect(
+        await s.attempt(`update themis.comments set body = 'Late edit' where id = $1`, [CM.A]),
+      ).toEqual({ ok: true, affected: 0 })
+      expect(await s.attempt(`delete from themis.comments where id = $1`, [CM.A])).toEqual({
+        ok: true,
+        affected: 0,
+      })
+      await s.sudo(async () =>
+        expect(await s.count('comments', `id = '${CM.A}' and body = 'Editor comment'`)).toBe(1),
+      )
+    }))
+
+  it("nobody writes a row in someone else's name or rewrites identity/option columns", () =>
+    actAs(U.ownerA, async (s) => {
+      for (const sql of [
+        `insert into themis.comments (workspace_id, decision_id, body, author)
+           values ('${WA}', '${D.A}', 'x', '${U.viewerA}')`,
+        `insert into themis.comments (workspace_id, decision_id, body, created_by)
+           values ('${WA}', '${D.A}', 'x', '${U.viewerA}')`,
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason, actor)
+           values ('${WA}', '${D.A}', 'approved', 'x', '${U.adminA}')`,
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason, created_by)
+           values ('${WA}', '${D.A}', 'approved', 'x', '${U.adminA}')`,
+        `insert into themis.swot_items (workspace_id, decision_id, quadrant, created_by)
+           values ('${WA}', '${D.A}', 's', '${U.viewerA}')`,
+        `insert into themis.risks (workspace_id, decision_id, option_id, likelihood, impact, created_by)
+           values ('${WA}', '${D.A}', '${O.A1}', 1, 1, '${U.viewerA}')`,
+        `insert into themis.swot_items (id, workspace_id, decision_id, quadrant)
+           values (gen_random_uuid(), '${WA}', '${D.A}', 's')`,
+        `update themis.comments set author = '${U.ownerA}' where id = '${CM.A}'`,
+        `update themis.comments set created_by = '${U.ownerA}' where id = '${CM.A}'`,
+        `update themis.swot_items set created_by = '${U.ownerB}' where id = '${SW.A1}'`,
+        `update themis.risks set created_by = '${U.ownerB}' where id = '${RK.A1}'`,
+        `update themis.swot_items set id = gen_random_uuid() where id = '${SW.A1}'`,
+        `update themis.risks set option_id = '${O.A2}' where id = '${RK.A1}'`,
+        `update themis.swot_items set option_id = null where id = '${SW.A2}'`,
+        `update themis.risks set updated_at = now() where id = '${RK.A1}'`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+
+  it.each([
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s records an approval, attributed to themselves', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const [a] = await s.rows<Row>(
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason)
+         values ($1, $2, 'approved', 'Meets the bar') returning actor, created_by, verdict`,
+        [WA, D.A],
+      )
+      expect(a).toEqual({ actor: uid, created_by: uid, verdict: 'approved' })
+    }),
+  )
+
+  it.each([
+    ['editor', U.editorA],
+    ['viewer', U.viewerA],
+  ])('%s cannot record an approval', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.approvals (workspace_id, decision_id, verdict, reason)
+         values ($1, $2, 'approved', 'x')`,
+        [WA, D.A],
+      )
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates row-level security/)
+      await s.sudo(async () => expect(await s.count('approvals', `workspace_id = '${WA}'`)).toBe(2))
+    }),
+  )
+
+  it.each([
+    ['owner', U.ownerA],
+    ['admin', U.adminA],
+    ['editor', U.editorA],
+    ['viewer', U.viewerA],
+  ])('approvals are append-only: %s can neither update nor delete one', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const before = await snapshot(s, 'approvals', `workspace_id = '${WA}'`)
+      for (const sql of [
+        `update themis.approvals set verdict = 'approved' where id = '${AP.A}'`,
+        `update themis.approvals set reason = 'Rewritten' where id = '${AP.AF}'`,
+        `update themis.approvals set actor = '${U.editorA}' where id = '${AP.AF}'`,
+        `delete from themis.approvals where id = '${AP.A}'`,
+        `delete from themis.approvals where workspace_id = '${WA}'`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+      expect(await snapshot(s, 'approvals', `workspace_id = '${WA}'`)).toEqual(before)
+    }),
+  )
+})
+
+describe('analysis (P1.6): check constraints (as superuser, so only the constraint can refuse)', () => {
+  const OK = { ok: true, affected: 1 }
+  const insert = (s: Session, t: string, all: Record<string, unknown>) => {
+    const k = Object.keys(all)
+    return s.attempt(
+      `insert into themis.${t} (${k.join(', ')}) values (${k.map((_, i) => `$${i + 1}`).join(', ')})`,
+      Object.values(all),
+    )
+  }
+  const risk = (s: Session, cols: Record<string, unknown>) =>
+    insert(s, 'risks', {
+      workspace_id: WA,
+      decision_id: D.A,
+      option_id: O.A1,
+      likelihood: 3,
+      impact: 3,
+      ...cols,
+    })
+  const swot = (s: Session, cols: Record<string, unknown>) =>
+    insert(s, 'swot_items', { workspace_id: WA, decision_id: D.A, quadrant: 's', ...cols })
+  const comment = (s: Session, body: string | null) =>
+    insert(s, 'comments', { workspace_id: WA, decision_id: D.A, body })
+  const approval = (s: Session, verdict: string, reason: string | null) =>
+    insert(s, 'approvals', { workspace_id: WA, decision_id: D.A, verdict, reason })
+
+  it('likelihood and impact are 1..5: 0 and 6 refused, 1 and 5 accepted, update to 6 refused', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const col of ['likelihood', 'impact']) {
+        expect(checkRefused(await risk(s, { [col]: 0 }), `risks_${col}_check`), col).toBe(true)
+        expect(checkRefused(await risk(s, { [col]: 6 }), `risks_${col}_check`), col).toBe(true)
+        expect(await risk(s, { [col]: 1 }), col).toEqual(OK)
+        expect(await risk(s, { [col]: 5 }), col).toEqual(OK)
+        const up = await s.attempt(`update themis.risks set ${col} = 6 where id = $1`, [RK.A1])
+        expect(checkRefused(up, `risks_${col}_check`), JSON.stringify(up)).toBe(true)
+        expect(notNullRefused(await risk(s, { [col]: null }), col), col).toBe(true)
+      }
+    }))
+
+  it('a risk requires an option (option_id NOT NULL)', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(notNullRefused(await risk(s, { option_id: null }), 'option_id')).toBe(true)
+    }))
+
+  it('quadrant is s|w|o|t only; a SWOT item may be decision-level (no option)', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const q of ['s', 'w', 'o', 't']) expect(await swot(s, { quadrant: q }), q).toEqual(OK)
+      for (const bad of ['x', 'S', 'strength', ''])
+        expect(
+          checkRefused(await swot(s, { quadrant: bad }), 'swot_items_quadrant_check'),
+          bad,
+        ).toBe(true)
+      expect(notNullRefused(await swot(s, { quadrant: null }), 'quadrant')).toBe(true)
+      expect(await swot(s, { option_id: null })).toEqual(OK)
+      expect(await swot(s, { option_id: O.A2 })).toEqual(OK)
+    }))
+
+  it('verdict is approved|rejected only', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await approval(s, 'approved', 'r')).toEqual(OK)
+      expect(await approval(s, 'rejected', 'r')).toEqual(OK)
+      for (const bad of ['maybe', 'Approved', 'pending', ''])
+        expect(checkRefused(await approval(s, bad, 'r'), 'approvals_verdict_check'), bad).toBe(true)
+    }))
+
+  it('an approval reason is required and non-blank (<= 2000)', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(notNullRefused(await approval(s, 'approved', null), 'reason')).toBe(true)
+      for (const blank of ['', '   '])
+        expect(
+          checkRefused(await approval(s, 'rejected', blank), 'approvals_reason_check'),
+          JSON.stringify(blank),
+        ).toBe(true)
+      expect(await approval(s, 'approved', 'r'.repeat(2000))).toEqual(OK)
+      expect(checkRefused(await approval(s, 'approved', 'r'.repeat(2001)))).toBe(true)
+    }))
+
+  it('an empty or blank comment is refused (<= 4000)', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(notNullRefused(await comment(s, null), 'body')).toBe(true)
+      for (const blank of ['', '   '])
+        expect(
+          checkRefused(await comment(s, blank), 'comments_body_check'),
+          JSON.stringify(blank),
+        ).toBe(true)
+      expect(await comment(s, 'b'.repeat(4000))).toEqual(OK)
+      expect(checkRefused(await comment(s, 'b'.repeat(4001)))).toBe(true)
+      const up = await s.attempt(`update themis.comments set body = ' ' where id = $1`, [CM.A])
+      expect(checkRefused(up, 'comments_body_check'), JSON.stringify(up)).toBe(true)
+    }))
+
+  it('text limits: swot text <= 1000, risk title/owner <= 200, mitigation <= 2000, position >= 0', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await swot(s, { text: 't'.repeat(1000) })).toEqual(OK)
+      expect(checkRefused(await swot(s, { text: 't'.repeat(1001) }))).toBe(true)
+      expect(checkRefused(await swot(s, { position: -1 }))).toBe(true)
+      expect(await risk(s, { title: 't'.repeat(200), owner: 'o'.repeat(200) })).toEqual(OK)
+      expect(checkRefused(await risk(s, { title: 't'.repeat(201) }))).toBe(true)
+      expect(checkRefused(await risk(s, { owner: 'o'.repeat(201) }))).toBe(true)
+      expect(await risk(s, { mitigation: 'm'.repeat(2000) })).toEqual(OK)
+      expect(checkRefused(await risk(s, { mitigation: 'm'.repeat(2001) }))).toBe(true)
+      expect(checkRefused(await risk(s, { position: -1 }))).toBe(true)
+    }))
+})
+
+describe('analysis (P1.6): defaults and updated_at', () => {
+  it('created_by (and author) default to the caller; text fields default to empty', () =>
+    actAs(U.editorA, async (s) => {
+      const [sw] = await s.rows<Row>(
+        `insert into themis.swot_items (workspace_id, decision_id, quadrant) values ($1, $2, 'w')
+         returning created_by, text, position, option_id`,
+        [WA, D.A],
+      )
+      expect(sw).toEqual({ created_by: U.editorA, text: '', position: 0, option_id: null })
+      const [rk] = await s.rows<Row>(
+        `insert into themis.risks (workspace_id, decision_id, option_id, likelihood, impact)
+         values ($1, $2, $3, 2, 4) returning created_by, title, owner, mitigation, position`,
+        [WA, D.A, O.A2],
+      )
+      expect(rk).toEqual({
+        created_by: U.editorA,
+        title: '',
+        owner: '',
+        mitigation: '',
+        position: 0,
+      })
+      const [cm] = await s.rows<Row>(
+        `insert into themis.comments (workspace_id, decision_id, body) values ($1, $2, 'hi')
+         returning created_by, author`,
+        [WA, D.A],
+      )
+      expect(cm).toEqual({ created_by: U.editorA, author: U.editorA })
+    }))
+
+  it.each([
+    ['swot_items', `text = 'x'`, SW.A1],
+    ['risks', `impact = 1`, RK.A1],
+    ['comments', `body = 'x'`, CM.A],
+    ['approvals', `reason = 'x'`, AP.A],
+  ])('an UPDATE on themis.%s bumps updated_at', (t, set, id) =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await s.count(t, `id = '${id}' and updated_at = '${OLD}'`)).toBe(1)
+      await s.rows(`update themis.${t} set ${set} where id = $1`, [id])
+      expect(
+        await s.count(t, `id = '${id}' and updated_at > '${OLD}'::timestamptz + interval '1 day'`),
+      ).toBe(1)
+    }),
+  )
+})
+
+describe('analysis (P1.6): cascades', () => {
+  it('deleting an option removes its risks and option-level SWOT only; decision-level SWOT stays', () =>
+    actAs(U.editorA, async (s) => {
+      expect(await s.attempt(`delete from themis.options where id = $1`, [O.A1])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        expect(await s.count('risks', `id = '${RK.A1}'`)).toBe(0)
+        expect(await s.count('swot_items', `id = '${SW.A2}'`)).toBe(0)
+        expect(await s.count('risks', `id = '${RK.A2}'`)).toBe(1)
+        expect(await s.count('swot_items', `id = '${SW.A1}'`)).toBe(1)
+        expect(await s.count('comments', `id = '${CM.A}'`)).toBe(1)
+        expect(await s.count('approvals', `id = '${AP.A}'`)).toBe(1)
+      })
+    }))
+
+  it('deleting a draft decision removes its SWOT, risks, comments and approvals only', () =>
+    actAs(U.editorA, async (s) => {
+      expect(await s.attempt(`delete from themis.decisions where id = $1`, [D.A])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        for (const t of ANALYSIS_TABLES) {
+          expect(await s.count(t, `decision_id = '${D.A}'`), t).toBe(0)
+          expect(await s.count(t, `decision_id = '${D.B}'`), t).toBe(1)
+        }
+        expect(await s.count('approvals', `id = '${AP.AF}'`)).toBe(1)
+      })
+    }))
+
+  it("the owner deleting workspace A removes all of A's analysis rows; B intact", () =>
+    actAs(U.ownerA, async (s) => {
+      expect(await s.attempt(`delete from themis.workspaces where id = $1`, [WA])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        for (const t of ANALYSIS_TABLES) {
+          expect(await s.count(t, `workspace_id = '${WA}'`), t).toBe(0)
+          expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
+        }
+      })
+    }))
+
+  it('deleting an auth user nulls author, actor and created_by, keeping the rows', () =>
+    actAs(SUPERUSER, async (s) => {
+      await s.rows(`delete from auth.users where id in ($1, $2)`, [U.editorA, U.adminA])
+      expect(
+        await s.count('comments', `id = '${CM.A}' and author is null and created_by is null`),
+      ).toBe(1)
+      expect(
+        await s.count('approvals', `id = '${AP.A}' and actor is null and created_by is null`),
+      ).toBe(1)
+      expect(await s.count('swot_items', `workspace_id = '${WA}' and created_by is null`)).toBe(2)
+      expect(await s.count('risks', `workspace_id = '${WA}' and created_by is null`)).toBe(2)
     }))
 })

@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.6) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.6 tests) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -113,8 +113,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   composite-FK cross-tenant inserts, role gating, lifecycle columns, constraints, grants, cascades;
   170 tests in that file, suite total 228).
   P1.6 done (builder): the analysis migration (swot_items, risks, comments, approvals), local only;
-  suite unchanged at 228, P1.6 coverage is the test-writer's next pass.
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.6 tests, then P1.7 (AI, billing, audit, plans).
+  P1.6 tests done: `db-tenancy.test.ts` covers the analysis tables too (271 tests in that file, suite total 327).
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.7 (AI, billing, audit, plans).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -158,6 +158,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   triggers, so an insert that hits both reports "duplicate key" and never reaches the FK. A test
   that proves a composite FK refuses a cross-tenant score must target a FREE cell, or it passes
   for the wrong reason. The P1.5 fixture leaves OA1×CA2 and OA2×CA2 unscored for this. Found in the P1.5 tests.
+- **On this Windows desktop a very long Bash heredoc fails with `ENAMETOOLONG: uv_spawn`** and runs nothing.
+  To append a large test block, Write it to a scratch file and `cat >>` it. Found in the P1.6 tests.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -178,6 +180,18 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.6 tests) — analysis tables in `scripts/db-tenancy.test.ts`
+
+- Did: 99 tests in the same file/PGlite. The fixture gained SWOT, risks, an editor-authored comment and two
+  approvals in A, and one of each in B. The four tables joined `TENANT_TABLES`. The new tests cover composite
+  decision-FK and option-FK refusals, the viewer comment right, author-only comment edit (including a removed
+  author), admin|owner-only approvals and append-only approvals for every role, CHECK/NOT NULL limits, no stored
+  exposure, the exact FK/policy (14)/column-grant sets, defaults, updated_at and cascades. Five archive-copy
+  mutations went RED (BUILD_LOG.md). lint, typecheck, 327 tests, db:check and db:gate are green. `supabase/` is
+  untouched, nothing is pushed.
+- Resolved: the builder's uncommitted 82-check scratch script is now permanent coverage.
+- Left off: P1.7.
 
 ### 2026-09-28 (P1.6) — analysis and collaboration migration
 
