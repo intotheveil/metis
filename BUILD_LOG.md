@@ -1096,3 +1096,45 @@ is now scanned too). No live Supabase; local-only mode is still the default (no 
 query; `*` → not found; `basenameFrom`), and a build-level check that `dist/404.html` equals `dist/index.html` (e.g. call
 `spaFallback()`'s hooks on a temp dir, or assert after a build). Then P2.4: note that Pages answers deep links with
 HTTP **404** (body = app), so a Playwright deep-link spec must assert the rendered app, not `response.ok()`.
+
+
+## 2026-09-28 — P2.3 tests (test-writer): routing + Pages SPA fallback
+
+**Added (no product code changed):**
+- `src/routes/routes.test.tsx` (jsdom, 20 tests). Each case renders the real route table (`AppRoutes`) in a `MemoryRouter`
+  with `initialEntries`, plus a `LocationProbe` that prints `useLocation()`.
+  - `/` renders the P0 matrix (THEMIS h1, Agile preset selected, Customer value criterion, Planned modules list).
+  - `/signin`, `/auth/callback` and `/invite/:token` each render their shell. `/w/ws-123` shows the id.
+    `/w/ws-1/decisions/9` (nested) shows `ws-1` and is not "not found". `/invite` with no token → not found.
+  - Unknown paths (`/no/such/page`, `/signin/extra`, `/auth`, `/w`) render "Page not found". The `*` route is last and
+    appears exactly once.
+  - **PKCE:** `/auth/callback?code=abc&state=x` → the location after render is exactly
+    `{pathname:'/auth/callback', search:'?code=abc&state=x', hash:''}`. An encoded `error_description` query survives
+    byte for byte.
+  - `basenameFrom`: `'/'→'/'`, `'/themis/'→'/themis'`, `'/themis'`, `'//'→'/'`, `'/a/b/'`. A MemoryRouter with
+    `basenameFrom('/themis/')` matches `/themis/signin`.
+- `scripts/spa-fallback.test.ts` (node env, 5 tests). It drives the real exported `spaFallback()` through Vite's `build()`
+  API (`configFile:false`) into an OS temp dir, never dist/. Checks:
+  - `404.html` `Buffer.equals` the built `index.html` (built, with a hashed asset URL, not the source file).
+  - A custom `build.outDir` is honoured.
+  - `apply === 'build'`.
+  - The real `vite.config.ts` registers `themis-spa-fallback` and has `base: '/'`.
+  - No refactor was needed: `spaFallback` was already exported.
+
+**Mutation evidence** (each applied to product code, run, then reverted with `git checkout --`; the final `git diff` of
+product files is empty):
+1. Removed the `*` catch-all route → 6 RED (the 4 unknown paths, `/invite` without a token, and the catch-all-last check).
+2. `spaFallback` writes `fallback.html` instead of `404.html` → 2 RED (byte-identical, custom outDir).
+3. Removed `spaFallback()` from `plugins` in vite.config.ts → 1 RED (registers spaFallback).
+4. `AuthCallbackRoute` does `navigate('/auth/callback', {replace:true})` on mount → 2 RED (search `''` instead of
+   `?code=abc&state=x`).
+
+**Hiccup:** the first version flattened the plugin list with `.flat(Infinity)`. Vitest ran it green, but typecheck failed
+with TS2589. I replaced it with a recursive `pluginNames()` that awaits each entry, and recorded this in BRAIN §5.
+
+**Green:** `npm run lint && npm run typecheck && npm test` (**728/728**, 12 files; 703 + 25)
+`&& npm run db:check && npm run db:gate` (GATE PASSED) `&& npm run build && npm run check:bundle` (OK, 11 files).
+`cmp dist/index.html dist/404.html` → identical. No live Supabase. Committed locally, not pushed.
+
+**Next:** P2.4 (Playwright). A deep-link spec must assert the rendered app, not `response.ok()`, because Pages returns 404
+with the app as the body.

@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P2.3 routing + Pages SPA fallback; P2.2 tests + resolveAppEnv fix `20e2b77` recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P2.3 tests, 728/728; P2.3 routing + Pages SPA fallback; P2.2 tests + resolveAppEnv fix `20e2b77` recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -229,7 +229,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   P2.3 done (builder; committed locally, NOT pushed): routing + the Pages SPA fallback (§2). `/` is still the unchanged P0
   matrix (703/703 green); `/signin`, `/auth/callback`, `/w/:id/*`, `/invite/:token` are shells. `dist/404.html` =
   `dist/index.html`; a deep link was proven on `vite preview` (200 + shell) and on a Pages emulator (404 + shell; control
-  without 404.html = Pages' own 404). Bundle 234 → 275 kB (87 kB gzip). Test-writer for P2.3 is next, then P2.4.
+  without 404.html = Pages' own 404). Bundle 234 → 275 kB (87 kB gzip). P2.3 tests done: `src/routes/routes.test.tsx` (20) +
+  `scripts/spa-fallback.test.ts` (5, real Vite build into a temp dir); suite **728**. P2.4 is next.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -363,12 +364,26 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   Playwright/curl check must assert the rendered app, not `response.ok()`/status 200. Only a live `curl` of `/` is 200.
 - **The React Router data router (`createBrowserRouter`) costs ~2.4× the declarative one** (+95 kB raw / +30 kB gzip vs
   +40 / +14, measured at P2.3). Don't switch to it for convenience; switch only for loaders/actions, and re-measure.
+- **`.flat(Infinity)` on Vite's `PluginOption` fails typecheck with TS2589** (type instantiation excessively deep) even
+  though Vitest runs it green. Walk the option recursively as `unknown` (and await it: entries may be promises), as
+  `scripts/spa-fallback.test.ts` `pluginNames()` does. Found in the P2.3 tests.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P2.3 tests) — permanent routing + SPA-fallback coverage
+
+- Did: NEW `src/routes/routes.test.tsx` (20 tests: every route through the real table in a MemoryRouter, nested
+  `/w/:id/*`, unknown paths → not found, `/auth/callback?code=abc&state=x` and an encoded error query keep
+  `location.search` byte for byte, `basenameFrom`) and `scripts/spa-fallback.test.ts` (5 tests: drives the real
+  `spaFallback()` through Vite's `build()` API into an OS temp dir, 404.html byte-identical to the built index.html, custom
+  outDir, build-only, and the real `vite.config.ts` registers it with base '/'). Mutation-checked 4 ways, all RED, product
+  files restored. Chain green, 728/728. No product code changed. Not pushed.
+- Found: §5 (TS2589 on `.flat(Infinity)` over PluginOption).
+- Left off: P2.3 is ready for the phase gate later; next is P2.4 (Playwright; assert the rendered app on deep links, not the status).
 
 ### 2026-09-28 (P2.3) — routing and the GitHub Pages SPA fallback
 
