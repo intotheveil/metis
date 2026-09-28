@@ -923,3 +923,43 @@ reported to the lead.
 **CI:** the workflow edit needs the gh `workflow` scope to push (BRAIN §5). The step is untested on Actions until then.
 
 **Next:** test-writer (unit tests for `scanText`/`scanDir`, and a lint-rule test through the ESLint API), then P2.2/P2.3.
+
+
+## 2026-09-28 — P2.1 tests (test-writer): permanent coverage for the secret boundary
+
+**Added (116 tests, both `// @vitest-environment node`, typechecked via `tsconfig.scripts.json`):**
+
+- `scripts/check-bundle-secrets.test.ts` (42). `scanText` flags each of the 8 secret prefixes (`sk_live_`, `sk_test_`,
+  `rk_live_`, `rk_test_`, `whsec_`, `sk-ant-`, `sb_secret_`, `sbp_`) with rule, line and column, and the full value never
+  appears in the findings (masked excerpt). It also flags the literal `service_role`, a runtime-minted unsigned JWT with
+  `role: service_role` (the literal is asserted absent first, so only the decoder can catch it), and each of the 8 server-only
+  NAMES (`forbidden-name`, reported once). NOT flagged: `pk_live_`/`pk_test_`, an anon-role JWT, a non-JSON JWT shape,
+  `VITE_SUPABASE_ANON_KEY`/`_URL`/`VITE_STRIPE_PUBLISHABLE_KEY`, `task_test_`, a bare prefix with no body, and longer
+  identifiers that contain a name. `scanDir` on temp dirs: a clean build is ok; a planted nested file gives a finding with
+  path `assets/chunks/leak.js`; a secret behind non-UTF-8 bytes in a `.map` is found; a missing dir, a file path, an empty dir
+  and a dir of empty subdirs each throw. The CLI is spawned for real: exit 2 on missing and on empty, 0 on clean, 1 on a
+  finding (stderr `a.js:1:4 [secret-value]`, value absent from output).
+- `scripts/eslint-secret-boundary.test.ts` (74). Runs the REAL `eslint.config.js` through `new ESLint({ cwd, overrideConfigFile })`
+  + `lintText`, and keeps only `no-restricted-syntax` hits. Any fatal parse error fails the test, so "no hits" cannot pass
+  vacuously. In `src/`, all 8 names error in all 6 forms (`import.meta.env.X`, `process.env.X`, both bracket forms, both
+  destructures). The rule applies to `.ts/.tsx/.js/.jsx/.mjs/.cjs`, and a multi-read file reports the right lines. Unlisted
+  `VITE_*` errors, including `VITE_FLEET_` with an empty suffix and `VITE_SUPABASE_URL_OVERRIDE`. The allowed names, `VITE_FLEET_*`,
+  `BASE_URL`, `MODE`, `DEV` and `PROD` are clean in every form. The combined all-forbidden fixture has 49 errors in `src/`
+  and 0 in `scripts/ops.ts`, `scripts/lib/ops.mjs`, `e2e/live/auth.spec.ts` and `supabase/functions/stripe-webhook/index.ts`.
+  There is an explicit argus-news regression test: `import.meta.env.ANTHROPIC_API_KEY` in `src/` MUST error.
+
+**Mutation evidence (each restored; `git diff eslint.config.js scripts/check-bundle-secrets.mjs` empty afterwards):**
+- `META_ENV` weakened to argus-news's `[object.type='MetaProperty']` gave **26 failed / 48 passed**. Every `import.meta.env`
+  dot and bracket test failed, including both regression tests, the `.ext` test, the multi-line test, the 5 VITE dot/bracket
+  tests and the combined precondition. The `process.env` and destructure tests stayed green, as they should, because those
+  selectors do not use `META_ENV`.
+- The rule's `files` widened to `**/*` gave **4 failed**: the 4 server-side-path tests.
+- The scan's `(?<![A-Za-z0-9])` lookbehind removed gave **1 failed**: the `task_test_` test.
+
+**Green:** `npm run lint && npm run typecheck && npm test` (**667**, was 551) `&& npm run db:check && npm run db:gate &&
+npm run build && npm run check:bundle` → all pass (10 files, 593,703 bytes scanned).
+
+**Not a product bug:** a `.cjs` fixture using `export` is a parse error (sourceType commonjs), so the `.cjs` case uses
+`module.exports = process.env.X`.
+
+**Next:** P2.2 / P2.3.
