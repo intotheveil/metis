@@ -59,6 +59,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 | id  | sev | type     | summary                                                                                                                                                                                                                                                                                                                                                                                                           | status | added      |
 | --- | --- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
+| S1 | 🟠 | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility) | open | 2026-09-28 |
 | F1  | 🟠  | feature  | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                                                                                    | open   | 2026-09-28 |
 | F2  | 🔵  | feature  | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                                                                         | open   | 2026-09-28 |
 | F3  | 🔵  | feature  | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                                                                                      | open   | 2026-09-28 |
@@ -86,6 +87,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (spec) — commercial v1 specified; AWAITING OPERATOR APPROVAL (checkpoint)
+
+- Operator asked for a "commercial ready product" and ruled: hosted AI (we pay, metered), Free/Pro/Team via Stripe, v1 = AI analyst + SWOT/Risk + PDF report + Team workspace, seller = another entity (unnamed).
+- Did: wrote `zeus/specs/THEMIS_SPEC.md` (defensibility rule, modules, plans, Supabase EU + Edge Functions + Stripe, data model, hard constraints, P1–P6 arc with checkpoints, 6 open questions).
+- Left off: **CHECKPOINT (CLAUDE.md §7).** Nothing past P0 is built until the operator approves the spec and answers §10 Q1–Q2. Next after approval: `planner` turns the spec into PLAN.md, then P1 (needs the operator's OK to create the Supabase EU project).
 
 ### 2026-09-28 (logo) — the operator's real artwork replaces the drawn mark
 
