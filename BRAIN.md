@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.12 db:snapshot + db:snapshot:diff, read-only) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.13 live-apply runbook + evidence pack; CHECKPOINT P1-LIVE open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -144,6 +144,18 @@ projectRef, summary, sections}`, and `sections` = schemas, relations, constraint
   nothing outside themis changed, 1 on any change outside themis, and 2 when the snapshots cannot be compared. The
   Data-API exposed-schema LIST is PostgREST config (`GET /v1/projects/{ref}/postgrest`), not SQL. The snapshot cannot
   see it, so the P1.13 runbook reads it separately.
+  **Live-apply runbook (P1.13):** `docs/ops/LIVE_APPLY.md` is THE procedure for any live apply. It has 8 steps:
+  snapshot pre → read the exposed list → dry-run → apply → snapshot post + diff (this gates the exposure) → expose →
+  snapshot exposed + diff → the Hephaestus regression. It gives a rollback per step and holds the evidence pack.
+  The exposed-schema list is the Management API's `GET/PATCH /v1/projects/{ref}/postgrest`, field `db_schema` (a comma
+  list). Its FIRST entry is PostgREST's default profile, so `themis` is always APPENDED. The GET body also carries the
+  project's **JWT secret**, so print only `db_schema`/`db_extra_search_path`/`max_rows`. The Supabase connector has
+  no PostgREST-config tool, so without a token that is a Dashboard step (Project Settings → Data API). Transport B
+  (connector) = `execute_sql` only, never `apply_migration` (it writes Hephaestus's `supabase_migrations` ledger). It
+  runs SQL printed by heredoc helpers over the scripts' exports, proven byte-identical to `db:apply`'s requests.
+  **Hephaestus's `npm test` is static** (its `rls-isolation.test.ts` reads migration FILES), so it cannot see the live
+  DB. Its `e2e/tenant-isolation.spec.ts` WRITES (it signs up users) into whatever project `.env` names. Live
+  regression = the diffs + `deploy-smoke` with `DEPLOY_URL` + Data API probes + an operator sign-in.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -182,8 +194,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   Management-API applier (§2), with 35 tests on a fake fetch and PGlite; suite 467 tests. Nothing is applied live yet.
   P1.12 done locally (committed, NOT pushed, never run live): `npm run db:snapshot` + `npm run db:snapshot:diff`, a
   read-only catalogue snapshot and an outside-themis diff (§2). It has 84 tests; on PGlite a real `db:apply` shows up
-  only under themis, and 10 sabotages outside themis turn it RED. The suite is 551 tests. Next: P1.13 (the runbook +
-  evidence pack).
+  only under themis, and 10 sabotages outside themis turn it RED. The suite is 551 tests.
+  P1.10–P1.12 are now pushed, and CI is green on each (the last is run 36472021027, which includes the db gates).
+  P1.13 done locally (committed, NOT pushed): `docs/ops/LIVE_APPLY.md`, the live-apply runbook and pre-apply evidence
+  pack (§2). No live contact. **CHECKPOINT P1-LIVE is OPEN** (BUILD_LOG.md): the operator decides go/no-go, picks the
+  transport (a short-lived PAT or the connector), and approves the reordered steps and the regression set. Nothing is
+  applied live, and there is no `SUPABASE_ACCESS_TOKEN` on the desktop.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -195,6 +211,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 | --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------- |
 | S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                | open                                                                                                                  | 2026-09-28 |
 | B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
+| S2  | 🟠  | checkpoint | CHECKPOINT P1-LIVE: go/no-go for the first live apply + exposing `themis` (`docs/ops/LIVE_APPLY.md`; the decisions list is in BUILD_LOG.md)                                                                                                                        | open                                                                                                                  | 2026-09-28 |
+| T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                               | open                                                                                                                  | 2026-09-28 |
 | F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open                                                                                                                  | 2026-09-28 |
 | F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open                                                                                                                  | 2026-09-28 |
 | F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | open                                                                                                                  | 2026-09-28 |
@@ -264,6 +282,21 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   available". Import it (for example `@electric-sql/pglite/contrib/bloom`) and pass `new PGlite({ extensions: { bloom } })`.
   Found in P1.12.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
+- **The Management API's `GET /v1/projects/{ref}/postgrest` returns the project's JWT secret** along with `db_schema`.
+  Never paste or log the whole body; destructure the fields you need. Found in P1.13.
+- **The FIRST schema in the Data API's `db_schema` is the default profile** for every request without an
+  `Accept-Profile`/`Content-Profile` header. Adding a schema anywhere but the END can silently re-point another app
+  (Hephaestus) at the wrong schema. Found in P1.13.
+- **On this Windows desktop, `process.exit()` right after a `fetch` can crash node** with a libuv assertion
+  (`!(handle->flags & UV_HANDLE_CLOSING)`, exit 127), even when the request succeeded. Set `process.exitCode` and let
+  the script end. Found in P1.13.
+- **Hephaestus's `e2e/tenant-isolation.spec.ts` is NOT read-only.** It signs up two users and creates orgs in the
+  project its `.env` names, which on live is the shared `auth.users`. Hephaestus's `rls-isolation` is a static Vitest
+  suite, not an e2e spec. Found in P1.13.
+- **A heredoc inside a markdown list item gets an indented `EOF`.** Copied raw, the heredoc never terminates. Keep
+  runnable heredoc blocks flush-left in docs. Found in P1.13.
+- **`db:snapshot:diff`'s label lookup matches ANY `ops-snapshots/*-<label>.json`,** including a stray scratch file such as
+  `direct-pre.json`, and the lookup picks the newest. Keep `ops-snapshots/` free of other files. Found in P1.13.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
   `import.meta.env.BASE_URL`, never a hard-coded path, so a move back under a path stays a one-line change.
@@ -283,6 +316,24 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.13) — live-apply runbook + pre-apply evidence pack; CHECKPOINT P1-LIVE open
+
+- Did: NEW `docs/ops/LIVE_APPLY.md` (the only file of the task; no script, migration or test changed). It covers two
+  transports: A = the scripts + a short-lived PAT; B = the connector with `execute_sql` only + the Dashboard. It has 8
+  steps, each with a rollback, and the rollback plan covers an apply that fails midway and a destructive last resort
+  (its own approval, with a PGlite-tested dependency query). It states the paired rule and the Hephaestus regression
+  set. The evidence pack holds db:check, the full db:gate (290 PASS), prove-red 34/34, a PGlite rehearsal of the real
+  `db:apply`, transport-B helpers proven byte-identical, the PostgREST snippets against a fake API, and a Hephaestus
+  baseline of 721/721 at `4573d80`. The doc's own heredoc blocks were extracted and re-run. The chain lint, typecheck,
+  551 tests, db:check and db:gate is green. **No live contact**, and nothing was pushed.
+- Decided (DECISIONS.md P1.13): expose AFTER the apply and a clean diff, then a second diff; append `themis` last;
+  `--print` deferred as out of scope; `tenant-isolation` is not run live (it writes); the exposed value is recorded at
+  P1.14.
+- Found: §5 (the JWT secret in GET /postgrest, first schema = default profile, the Windows `process.exit` crash, the
+  tenant-isolation spec writes, indented heredoc `EOF`, the snapshot label lookup).
+- Left off: **CHECKPOINT P1-LIVE** (BUILD_LOG.md lists 6 operator decisions). After the go comes P1.14, which executes
+  the runbook and records `db_schema` before and after in both brains. T1 (the `--print`/`db:postgrest` tooling) is optional before that.
 
 ### 2026-09-28 (P1.12) — `npm run db:snapshot` / `db:snapshot:diff`: read-only live snapshot and diff
 
@@ -550,6 +601,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** `db:snapshot` is read-only because a checker refuses everything else. Its diff allows a change only in
   rows OWNED by `themis`, with FK triggers attributed to their constraint's schema and the pgrst.db_schemas list split
   per schema. It stores definitions as md5 only (DECISIONS.md P1.12).
+- **2026-09-28:** the live apply exposes `themis` only AFTER the apply and a clean `pre → post` diff, appends it LAST to `db_schema`, and re-diffs after exposing; a live session uses ONE transport (a PAT with the scripts, or the connector's `execute_sql` only, never `apply_migration`) (DECISIONS.md P1.13).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

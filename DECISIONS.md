@@ -300,3 +300,26 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   ACLs, any `pgrst.db_schemas` role setting, and whether `themis` exists. The list itself is read with
   `GET /v1/projects/{ref}/postgrest` in the P1.13 runbook. `mgmt-api.mjs` (P1.11) only POSTs SQL, and this task's
   scope did not include a GET.
+
+## 2026-09-28 — P1.13: live-apply runbook — expose last, two diffs, two transports, a live-safe regression set
+
+- **Exposure runs AFTER the apply and after a clean `pre → post` diff, and a second diff (`pre → exposed`) follows it.**
+  PLAN P1.13 listed the exposure before the apply. Exposing first would put a not-yet-existing schema into the Data API
+  config that Hephaestus uses, for the whole time between the two steps, and would expose `themis` before anyone had
+  proved that nothing outside it changed. The PLAN's six items are all still there, in the runbook's step table.
+- **`themis` is APPENDED to `db_schema`, never inserted.** The first schema in the list is PostgREST's default profile.
+  The step-6 snippet refuses to act unless the live list still equals the list recorded at step 2, so a concurrent
+  change is never overwritten, and its rollback restores exactly that recorded list.
+- **Two transports, one per session.** A = the repo scripts with a short-lived PAT. B = the operator's Supabase
+  connector with `execute_sql` only (never `apply_migration`, which writes Hephaestus's `supabase_migrations` ledger),
+  plus the Dashboard for the exposed list. B's SQL is produced by heredoc helpers that call the scripts' own exports.
+  They are proven byte-identical to what `db:apply` sends, so there is no second implementation of the batching. All
+  snapshots in a session go through one transport, so the diff compares like with like.
+- **`db:apply --print` is not built in P1.13.** Its scope is `docs/ops/LIVE_APPLY.md` only. The helper heredoc covers
+  the need until a follow-up task adds `--print` (plus `db:snapshot --from-raw` and a tested `db:postgrest`).
+- **The Hephaestus regression set is chosen for being read-only on live.** Its `tenant-isolation` e2e signs up users
+  into the shared `auth.users`, so it runs live only with a separate approval. `rls-isolation` is a static Vitest
+  suite, run as part of its `npm test`. The live proof is the two diffs, `deploy-smoke` against the live URL,
+  pre/post Data API probes and an operator sign-in, each compared with a pre baseline.
+- **The current exposed-schema value is recorded at P1.14 step 2, not in the runbook.** Reading it is live contact,
+  which P1.13 forbids.

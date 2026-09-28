@@ -754,3 +754,123 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - **Note for P1.13:** the exposed-schema list itself is PostgREST config. Read it with `GET /v1/projects/{ref}/postgrest`
   in the runbook, because the SQL snapshot only sees schema ACLs and any `pgrst.db_schemas` role setting.
 - **Next:** P1.13, the runbook and the pre-apply evidence pack.
+
+## 2026-09-28 — P1.13 live-apply runbook and pre-apply evidence pack (`docs/ops/LIVE_APPLY.md`)
+
+- **Attempted:** the runbook for the first live apply to Hephaestus's shared project `atopkqykdmrcfvvcistc`, with a
+  rollback for every step, and the pre-apply evidence pack. The only new file is `docs/ops/LIVE_APPLY.md`. No script,
+  migration or test changed.
+- **No live contact.** No token exists on the desktop and none was used. The connector was not called. Every output in
+  the doc comes from PGlite or from a local fake HTTP server.
+- **What the runbook covers:**
+  - Two transports:
+    - **A:** the repo scripts, with a short-lived PAT that is exported for the session and revoked after it.
+    - **B:** the operator's Supabase connector, using `execute_sql` only and NEVER `apply_migration`, which writes
+      Hephaestus's `supabase_migrations` ledger. Three helper heredocs print the exact batch and snapshot SQL to
+      gitignored files, using the scripts' own exports (`plan`, `buildBatch`, `SECTIONS`, `takeSnapshot`). In B, the
+      exposed-schema steps are done in the Dashboard.
+  - 8 steps:
+    1. `db:snapshot pre`;
+    2. read the exposed list (`GET /v1/projects/{ref}/postgrest`, printing only `db_schema` / `db_extra_search_path` /
+       `max_rows`, because the body carries the JWT secret);
+    3. `db:apply` dry-run, plus a proof that nothing survived;
+    4. `db:apply --apply`, plus a ledger/checksum re-check;
+    5. `db:snapshot post` + diff, the gate for step 6;
+    6. expose `themis`: an idempotent snippet that refuses unless the live list still equals the recorded one, and
+       appends `themis` LAST, because the first schema is the default profile. It is flagged project-wide, shared with
+       Hephaestus;
+    7. `db:snapshot exposed` + a second diff;
+    8. the Hephaestus regression.
+  - The paired-migration rule (unit 5 = one transaction, never split).
+  - A rollback table covering each step, the apply failing midway (units 1..k-1 committed, unit k rolled back whole,
+    the partial schema inert and unexposed), and the destructive last resort. That last resort needs its own
+    approval; it comes with a PGlite-tested "nothing outside themis depends on it" query.
+  - Follow-ups for the lead: `db:apply --print`, `db:snapshot --from-raw`, `db:postgrest`. They are out of P1.13's
+    file scope, so they were not built.
+- **Evidence (§7 of the doc, all at `0dc46ae`):**
+  - `db:check` PASS on 6 files.
+  - `db:gate`: 290 PASS, 0 FAIL, `GATE PASSED` (the full output is in the doc).
+  - `db:gate:prove-red`: 34/34 RED plus a GREEN control, wall 50.1 s.
+  - A local rehearsal of the REAL `db:apply run()` on PGlite + the shim through a fake fetch:
+    - the dry-run made 6 requests and left no schema `themis`;
+    - `--apply` made 6 requests and recorded all 6 versions with checksums, leaving Hephaestus's ledger at 25 rows;
+    - a re-run printed `PLAN  nothing pending`.
+  - Transport-B helpers: all 10 batch files are byte-identical to `db:apply`'s request bodies, and running them in order
+    gives the same ledger. The assembled snapshots are deep-equal to `takeSnapshot()` (106 and 624 rows), and
+    `db:snapshot:diff` exits 0.
+  - The PostgREST snippets against a fake `/postgrest` (whose body contained a fake `jwt_secret`, never printed):
+    - get; a refused wrong or placeholder `RECORDED`; expose; an idempotent re-expose; unexpose; an idempotent
+      re-unexpose; a bad MODE (exit 2); a 401 (exit 1);
+    - the PATCH bodies were only `{"db_schema": …}`.
+  - Finally, the five heredoc blocks were extracted from the doc itself and re-run, with the same results.
+  - Hephaestus baseline: `D:/projects/lss-platform` at `4573d80`, `npm test` 721/721 in 57 files. Nothing written there.
+  - Reference post-apply object list: 18 tables, 43 indexes, 5 functions, 43 policies.
+- **Found:**
+  - (1) PLAN's step order exposed `themis` before it existed. The runbook now exposes it after the apply and after a
+    clean diff (DECISIONS.md P1.13).
+  - (2) Hephaestus's `e2e/tenant-isolation.spec.ts` is NOT read-only: it signs up 2 users and creates orgs in whatever
+    project `.env` names, which is the shared `auth.users` on live. There is no `rls-isolation` e2e; that is a static
+    Vitest suite that never touches a DB. So `npm test` in lss-platform cannot see the live DB, and the live proof is
+    the two diffs, `deploy-smoke` against the live URL, Data API probes and an operator sign-in.
+  - (3) Node on Windows crashes with a libuv assertion (exit 127) on `process.exit()` right after `fetch`, even when
+    the PATCH succeeded. The snippets use `process.exitCode`.
+  - (4) The exposed-schema value cannot be recorded before P1.14, because reading it is live contact. Step 2 records
+    it in this log at P1.14.
+- **Passed:** `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate`, chain exit 0: 551
+  tests, the guard on 6 files, GATE PASSED. `prettier --check docs/ops/LIVE_APPLY.md` is clean.
+- **Blocked:** nothing.
+- **Next:** CHECKPOINT P1-LIVE (below). Nothing touches the live project before the operator's go.
+
+## CHECKPOINT P1-LIVE — 2026-09-28 — awaiting the operator's go / no-go (CLAUDE.md §7)
+
+**The ask.** Go or no-go for P1.14, which does two things to Hephaestus's LIVE Supabase project `lss-platform`
+(`atopkqykdmrcfvvcistc`, eu-west-1):
+
+1. Apply the 6 Themis migrations (5 transactions) into a new schema `themis`, tracked in `themis.schema_migrations`.
+2. Append `themis` to the Data API's exposed schemas. This is a project-wide setting that Hephaestus shares.
+
+**What would change.** Nothing outside `themis` except the exposed-schema list. The procedure is
+`docs/ops/LIVE_APPLY.md`: 8 steps, two snapshot diffs, a rollback for every step.
+
+**Evidence on hand:**
+
+- The gates are green:
+  - `db:check`;
+  - `db:gate` (290 PASS);
+  - `db:gate:prove-red` (34/34 RED);
+  - 551 tests.
+- A PGlite rehearsal of the real applier: the dry-run leaves nothing, the apply records 6 versions, and Hephaestus's
+  ledger is untouched.
+- The transport-B helpers are proven byte-identical to the applier.
+- The PostgREST snippets were exercised against a fake API.
+
+**Not available until go:** the live dry-run output and the current exposed-schema value. Both need live contact.
+
+**Decisions needed from the operator:**
+
+1. **Transport.**
+   - A (recommended): mint a short-lived personal access token for the session, and revoke it after.
+   - B: the Supabase connector with `execute_sql` only, and the Dashboard for the exposed list.
+2. **The reordered steps.** Expose AFTER the apply and a clean diff, plus a second diff after exposing. PLAN P1.13
+   listed the exposure before the apply.
+3. **A window and a Hephaestus freeze.** Hephaestus has production migrations pending (`…019`–`…025`, its BRAIN).
+   Push them before step 1, or not before step 8. No Hephaestus deploy runs in between. Each batch briefly locks
+   `auth.users` (about a second; 5 s lock timeout).
+4. **The Hephaestus regression set.** PLAN named the `tenant-isolation` and `rls-isolation` e2e "read-only against
+   live". `tenant-isolation` WRITES (it signs up users into the shared `auth.users`), and `rls-isolation` is a static
+   unit suite. The runbook uses instead: Hephaestus `npm test` (a baseline of 721/721), `deploy-smoke` against
+   https://lss-platform.netlify.app, Data API probes pre and post, and an operator sign-in. Running `tenant-isolation`
+   live needs a separate yes and a cleanup plan.
+5. **The PLAN's spec discrepancies:**
+   - the domain `themis.adeonanalytics.com`;
+   - the `themis-*` function names;
+   - the `THEMIS_*` secret names;
+   - the logo stored in the table.
+
+   Also: `plans` goes live seeded with the §4 PROPOSAL values (marked UNCONFIRMED; P4.9 changes them).
+
+6. **Push P1.13 first.** P1.10–P1.12 are on `origin/main`, and CI (lint, typecheck, tests, db:check, db:gate,
+   db:gate:prove-red, build, deploy) is green on them: runs 36468009365, 36469834636 and 36472021027. P1.13 (this doc)
+   is a local commit. The recommendation is to push it and apply from a commit whose CI run is green.
+
+**The crew waits here. P1.14 does not start without the operator's go.**
