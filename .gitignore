@@ -1,0 +1,22 @@
+# --- Secrets / env (NEVER commit; .env.example carries NAMES only) ---
+.env
+.env.*
+!.env.example
+*.local
+
+# --- Node / build ---
+node_modules
+dist
+*.tsbuildinfo
+*.log
+
+# --- Editor / OS ---
+.vscode/*
+.idea
+.DS_Store
+
+# --- Claude build-kit local state (the kit itself IS committed) ---
+.claude/settings.local.json
+.claude/checkpoints.log
+.claude/CLAUDE.md.bak
+.claude/CLAUDE.md.pre-kit
