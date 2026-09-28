@@ -1007,3 +1007,38 @@ a little lower).
 `supabase.ts` test can use `vi.stubEnv` plus `vi.resetModules` to assert `supabase === null` with no env). Then P2.3.
 For P2.10: re-run `check:bundle` after the first real import. If a future supabase-js ever ships `service_role` outside a
 comment, add a narrow exception keyed to that exact occurrence, with a test. Never widen the rule.
+
+### P2.2 tests (test-writer) — 2026-09-28 — RED on a real env.ts bug, NOT committed
+
+**Added (uncommitted, in the working tree):**
+- `src/lib/env.test.ts` (25 tests): every resolveAppEnv branch. Covers missing url, blank or whitespace url, both
+  missing (url is checked first), missing key, blank or whitespace key, relative path, host without a scheme, garbage,
+  `https://` alone, ftp/ws/javascript/file schemes, valid https, valid `http://localhost:54321`, and trimming. An
+  odd-input block feeds explicit undefined, numeric url, numeric key, booleans and nulls, and asserts no throw and local mode.
+- `src/lib/supabase.test.ts` (11 tests): the exact THEMIS_CLIENT_OPTIONS shape (toStrictEqual). clientFor(local) → null
+  for all 3 reasons. clientFor(configured): `.from('decisions')` has schema `themis` and path `/rest/v1/decisions`, and
+  `.rpc('x')` has schema `themis` and path `/rest/v1/rpc/x`. Auth is flowType pkce with persistSession and
+  detectSessionInUrl true. Module-level (vi.stubEnv + vi.resetModules): unset → `supabase === null`, and import does not
+  throw. Url only → null. Malformed url → null. Both set → a themis-pinned client. Global fetch is stubbed in every
+  test, and each test asserts zero calls after the auth initialize settles.
+
+**Mutation evidence (each restored; `git diff src/lib/*.ts` empty):** THEMIS_SCHEMA → 'public' gives 4 red. The http(s)
+protocol check removed (ftp etc. → configured) gives 4 red. flowType → 'implicit' gives 2 red. clientFor always creates a
+client gives 8 red. createThemisClient fires a `.select()` on creation gives 4 red (the fetch-spy assertions work).
+
+**BUG (builder to fix, src/lib/env.ts):** `resolveAppEnv` is documented "Pure: never throws", but it throws
+`TypeError: raw.VITE_SUPABASE_URL?.trim is not a function` on a non-string value (number/boolean). `?.` only guards
+null/undefined. 3 tests are red: numeric url, numeric key, boolean values. Suggested fix: coerce with
+`typeof v === 'string' ? v.trim() : ''`. The tests were NOT weakened.
+
+**Suite:** lint OK, typecheck OK, `npm test` 700/703 (only the 3 bug tests red), db:check PASS, db:gate PASSED, build OK
+(bundle unchanged, `index-DhFmrpjC.js`), check:bundle OK. Flake noted: one full run had `scripts/eslint-secret-boundary.test.ts`
+"import.meta.env.ANTHROPIC_API_KEY in src/ MUST error" fail once. It passed 74/74 alone and on the next full run, so it is
+likely timing under load. Watch it.
+
+**Next:** builder fixes env.ts. Re-run the suite, then commit these two test files as `test: ...` (P2.2).
+
+## 2026-09-28 — P2.2 fix: resolveAppEnv never throws on non-string input; eslint test warm-up
+
+- The test-writer found `resolveAppEnv` threw `TypeError ... trim is not a function` on a number or boolean, which breaks its "never throws" contract. Fixed with a `typeof` check, so a non-string now means local-only. The 3 red tests are green, and the suite is 703/703.
+- The flaky first test in `eslint-secret-boundary.test.ts` came from a cold ESLint load under a parallel run. `beforeAll` now warms up with one `lintText` (60 s hook budget). 3 consecutive full runs were green.

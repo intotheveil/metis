@@ -40,8 +40,10 @@ export type AppEnv =
  * the result is local-only mode with the first reason found.
  */
 export function resolveAppEnv(raw: RawSupabaseEnv): AppEnv {
-  const url = raw.VITE_SUPABASE_URL?.trim() ?? ''
-  const anonKey = raw.VITE_SUPABASE_ANON_KEY?.trim() ?? ''
+  // `typeof` rather than `?.`: a non-string (number, boolean) must mean local-only, not a TypeError.
+  const url = typeof raw.VITE_SUPABASE_URL === 'string' ? raw.VITE_SUPABASE_URL.trim() : ''
+  const anonKey =
+    typeof raw.VITE_SUPABASE_ANON_KEY === 'string' ? raw.VITE_SUPABASE_ANON_KEY.trim() : ''
   if (url === '') return { mode: 'local', reason: 'missing-url' }
   if (anonKey === '') return { mode: 'local', reason: 'missing-anon-key' }
   let parsed: URL

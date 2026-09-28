@@ -17,9 +17,12 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const CONFIG = fileURLToPath(new URL('../eslint.config.js', import.meta.url))
 
 let eslint: ESLint
-beforeAll(() => {
+// Warm up here: the first lintText loads the config and parsers cold, and under a parallel full run
+// that can exceed a single test's 5 s budget — it once failed the first regression test (flaky).
+beforeAll(async () => {
   eslint = new ESLint({ cwd: ROOT, overrideConfigFile: CONFIG })
-})
+  await eslint.lintText('export {}\n', { filePath: `${ROOT}src/warmup.ts` })
+}, 60_000)
 
 const SECRET_MSG = /Server-only secret in browser code/
 const VITE_MSG = /VITE_ name outside the allow-list/
