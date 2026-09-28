@@ -159,3 +159,27 @@ decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_
   controls. The DB stores inputs only, never a computed score.
 - **The enum-match assertion lives in `scripts/db-tenancy.test.ts`** until P1.8 adds it to db-gate.mjs,
   which is outside P1.5's files.
+
+## 2026-09-28 — P1.6 analysis and collaboration choices
+
+- **Approvals follow PLAN P1.6 literally: admin|owner may INSERT one directly** (RLS + a column grant on
+  workspace_id, decision_id, verdict, reason). `actor` and `created_by` default to `auth.uid()` and are not
+  grantable, and the policy also checks `actor = auth.uid()`, so nobody records a verdict in someone else's name.
+  No UPDATE/DELETE policy or grant exists, so an approval is append-only client-side. A direct insert does NOT
+  freeze the decision or change its status; that is the P4.2 `approve()`/`reject()` RPC's job. P4.2 should
+  decide whether to revoke the direct INSERT grant once those RPCs exist, so a verdict row always matches the
+  decision's lifecycle.
+- **Risks carry `decision_id` as well as `option_id`.** `options` has `unique(id, decision_id)` but no
+  `unique(id, workspace_id)`, so the tenancy chain is `(decision_id, workspace_id)` → decisions plus
+  `(option_id, decision_id)` → options, the same pattern as scores. The P4.2 frozen trigger also needs the
+  decision directly. swot_items uses the same option FK; its option_id is nullable (MATCH SIMPLE skips the check)
+  for decision-level items.
+- **The option of a swot item or risk is not updatable.** Moving it means delete + insert, as with the tenancy keys
+  on scores.
+- **`risks.owner` is free text, not a user FK.** A risk owner is often outside the workspace (a vendor, a team).
+- **Comments keep both `author` and `created_by`.** The plan names both; both default to `auth.uid()` and are
+  client-unwritable, so they are equal for client rows. `author` is the key of the "only the author edits"
+  policy. Update/delete also require current membership, so a removed member cannot edit old comments.
+- **`position smallint` on swot_items and risks**, for the P1.5 reason: rows created in one statement (the P4.2
+  `new_revision` copy, a P4.6 batch) share `created_at`.
+- **Quadrant is stored as `s|w|o|t`**, exactly as the plan writes it.

@@ -259,3 +259,42 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
 - Bugs found: none. The migration behaves as DECISIONS.md "P1.5 decision core choices" describes. Noted, by plan: until the
   P4.2 `decision_frozen` triggers, editors can still write options, criteria and scores of a frozen decision.
 - Next: P1.6 (analysis and collaboration).
+
+## 2026-09-28 — P1.6 analysis and collaboration migration
+
+- Did: migration added, `supabase/migrations/20260928230000_themis_analysis.sql`. It creates:
+  - `themis.swot_items` (decision_id, option_id null = decision-level, quadrant `s|w|o|t`, text ≤ 1000, position).
+  - `themis.risks` (decision_id, option_id NOT NULL, title ≤ 200, likelihood 1–5, impact 1–5, owner free text ≤ 200,
+    mitigation ≤ 2000, position). No exposure/score column: likelihood × impact belongs to `decision.ts` (P4.1).
+  - `themis.comments` (decision_id, body 1–4000 non-blank, author).
+  - `themis.approvals` (decision_id, verdict `approved|rejected`, reason NOT NULL and non-blank ≤ 2000, actor).
+  - All four: own `workspace_id`, composite FK `(decision_id, workspace_id)` → `decisions(id, workspace_id)` on delete
+    cascade, `created_by` defaulted from `auth.uid()`, `created_at`, `updated_at` + `touch_updated_at` trigger. swot_items
+    and risks also have `(option_id, decision_id)` → `options(id, decision_id)`, so an option of another decision (and so
+    of another workspace) can never be named. `author`/`actor` are defaulted from `auth.uid()` as well.
+  - RLS via `is_member`/`has_role` only: swot_items and risks read by members, written by editor|admin|owner. Comments
+    read and posted by any member (viewer included, `author = auth.uid()`); only the author, while a member, updates or
+    deletes. Approvals read by members, INSERT by admin|owner only (`actor = auth.uid()`), no UPDATE/DELETE policy or grant.
+  - Grants: column-limited INSERT/UPDATE; the client never writes ids, workspace_id/decision_id/option_id on update,
+    created_by, author or actor. anon nothing; service_role full DML.
+- Existing tests: none went RED. The P1.4 and P1.5 exact-set assertions were already scoped to their own table groups,
+  so `scripts/db-tenancy.test.ts` was NOT touched. New coverage is left to the test-writer.
+- Exercised: a scratch PGlite script (not committed, real archive applied twice) ran 82 checks, all PASS:
+  - B reads 0 of A in all 4 tables, B's UPDATE/DELETE of A's rows has no effect; anon is refused on all 4.
+  - B's child row with ws=B pointing at A's decision is refused by the composite FK in all 4 tables, with ws=A by RLS;
+    a swot/risk on B's own decision naming A's option is refused by `*_option_fkey`; a swot/risk naming an option of
+    another decision in the same workspace is refused.
+  - viewer reads all 4, cannot write swot/risks/approvals, CAN post a comment (author = self); editor writes swot/risks
+    but cannot approve; owner and admin can approve (actor = self); owner cannot update or delete an approval
+    (permission denied), and cannot edit or delete an editor's comment (0 rows); the author can.
+  - Column grants: option_id/decision_id/workspace_id/created_by/author not updatable; created_by/author/actor not
+    insertable.
+  - CHECKs: likelihood 6, impact 0, risk without option, quadrant `x`, blank/null reason, verdict `maybe`, empty
+    comment all refused. updated_at bumps. Option delete cascades its risks and option-level SWOT (decision-level SWOT
+    kept); workspace delete cascades all 4.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exits 0. 228 tests
+  pass; the guard passes 4 files; the gate applies and re-applies 4 files. Nothing applied live, nothing pushed.
+- Not done here (by plan): `decision_frozen` triggers on these tables and the approve()/reject() RPCs are P4.2; the
+  leak-matrix coverage check is P1.8.
+- Next: test-writer for P1.6 (add the four tables to `TENANT_TABLES`, plus role gating, comment-author rule,
+  approval append-only, composite/option FKs, column grants), then P1.7.

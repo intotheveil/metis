@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.5 tests) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.6) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -81,6 +81,14 @@ call".
   Members read, and editor+ write. A frozen decision cannot be updated or deleted (RLS). The client
   cannot write the lifecycle columns, ids, tenancy keys or `created_by` (column grants), because
   those change only through the P4.2 RPCs. The DB stores inputs only.
+  **Analysis and collaboration (P1.6):** `20260928230000_themis_analysis.sql` adds `swot_items`
+  (option_id nullable = decision-level, quadrant `s|w|o|t`, text, position), `risks` (option_id required,
+  title, likelihood/impact 1–5, owner free text, mitigation, position — exposure is NOT stored, it is
+  `decision.ts` P4.1), `comments` (body, author) and `approvals` (verdict approved|rejected, reason required,
+  actor). Same pattern: own `workspace_id`, composite FK `(decision_id, workspace_id)`, and swot/risks also
+  `(option_id, decision_id)` → options. swot/risks: members read, editor+ write. comments: any member posts
+  (viewer too); only the author (still a member) updates/deletes. approvals: admin|owner INSERT only, nobody
+  updates/deletes; `author`/`actor`/`created_by` default `auth.uid()` and are client-unwritable.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -104,7 +112,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   only. P1.5 tests done: `db-tenancy.test.ts` now covers the decision core too (isolation matrix,
   composite-FK cross-tenant inserts, role gating, lifecycle columns, constraints, grants, cascades;
   170 tests in that file, suite total 228).
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.6 (analysis).
+  P1.6 done (builder): the analysis migration (swot_items, risks, comments, approvals), local only;
+  suite unchanged at 228, P1.6 coverage is the test-writer's next pass.
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.6 tests, then P1.7 (AI, billing, audit, plans).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -168,6 +178,18 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.6) — analysis and collaboration migration
+
+- Did: `supabase/migrations/20260928230000_themis_analysis.sql` (see §2). No existing test went RED (P1.4/P1.5
+  exact-set assertions were already scoped), so `scripts/db-tenancy.test.ts` is untouched. A scratch PGlite script
+  ran 82 behavioural checks, all PASS (BUILD_LOG.md), and was not committed. lint, typecheck, 228 tests, db:check and
+  db:gate (4 files, applied twice) are green. Nothing applied live, nothing pushed.
+- Decided: approvals follow PLAN P1.6 (admin|owner direct INSERT, append-only); risks carry decision_id for the
+  composite chain; risk owner is free text; option of a swot/risk is not updatable (DECISIONS.md P1.6).
+- Left off: test-writer for P1.6 (append the four tables to `TENANT_TABLES`; comment-author rule, approval
+  append-only, option FKs, column grants). Then P1.7. Open for P4.2: a direct approval insert does not freeze the
+  decision — decide there whether to revoke the direct INSERT grant once `approve()`/`reject()` exist.
 
 ### 2026-09-28 (P1.5 tests) — decision core in `scripts/db-tenancy.test.ts`
 
@@ -303,6 +325,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** `db:gate` applies the archive twice (idempotency proof); `themis` revokes default EXECUTE from PUBLIC (DECISIONS.md, P1.2).
 - **2026-09-28:** tenancy writes (memberships, invites, new workspaces) are RPC-only; RLS reads membership only via SECURITY DEFINER helpers (DECISIONS.md P1.4).
 - **2026-09-28:** decision lifecycle columns (status, frozen, approved_*, lineage/revision) are not client-writable; only the P4.2 RPCs change them. A frozen decision cannot be updated or deleted (DECISIONS.md P1.5).
+- **2026-09-28:** approvals are append-only (admin|owner INSERT, no UPDATE/DELETE); only a comment's author edits it; risk exposure is never stored (DECISIONS.md P1.6).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
