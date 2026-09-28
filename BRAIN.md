@@ -1,4 +1,4 @@
-# 🧠 BRAIN — Metis (`metis`)
+# 🧠 BRAIN — Themis (`themis`)
 
 > This is the single source of truth for this product. It is read BEFORE any work and
 > written AFTER any work (CLAUDE.md §0). Knowledge lives here, not in conversation history.
@@ -7,17 +7,17 @@
 
 **Last updated:** 2026-09-28 by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
-**Repo:** `intotheveil/metis` · local `D:\projects\metis`   ·   **Deployed:** https://intotheveil.github.io/metis/ (GitHub Pages)
+**Repo:** `intotheveil/themis` · local `D:\projects\themis`   ·   **Deployed:** https://intotheveil.github.io/themis/ (GitHub Pages)
 
 ---
 
 ## 1. WHAT THIS IS  (never-changes context — read first, every time)
 
-Metis is an AI-powered decision-making tool for projects run **Waterfall, Agile, or "YOLO"**
+Themis is an AI-powered decision-making tool for projects run **Waterfall, Agile, or "YOLO"**
 (ship-first), for companies from small to large. The operator's intent, verbatim: *"A tool which
 is AI powered for decision making using all best models and practices for Waterfall and Agile and
 even yolo projects. But also for Companies from small and large scale."* Named for the Titaness of
-wise counsel. "Working" means a user can frame a decision, weigh criteria for their delivery
+divine law and order, who holds the scales. "Working" means a user can frame a decision, weigh criteria for their delivery
 method and org scale, score options, and get an honest recommendation — including "too close to
 call".
 
@@ -68,11 +68,11 @@ call".
 
 ## 5. GOTCHAS  (hard-won "don't do X, it breaks Y")
 
-- **Pages serves under `/metis/`.** `vite.config.ts` `base` must stay `/metis/`; `index.html`'s
-  favicon is spelled `/metis/favicon.svg` for the same reason. Renaming the repo breaks every asset.
+- **Pages serves under `/themis/`.** `vite.config.ts` `base` must stay `/themis/`; `index.html`'s
+  favicon is spelled `/themis/favicon.svg` for the same reason. Renaming the repo breaks every asset.
 - **The kit's `format.sh` rewrites files on Write/Edit here** (this repo HAS a prettier config),
   including `.claude/CLAUDE.project.md` — after editing that file, re-run
-  `node <zeus>/.zeus/kit/kit.mjs apply metis` so the composed CLAUDE.md matches.
+  `node <zeus>/.zeus/kit/kit.mjs apply themis` so the composed CLAUDE.md matches.
 - **A static bundle is public.** No `VITE_*` secret, ever — Vite inlines them.
 
 ---
@@ -80,7 +80,7 @@ call".
 ## 6. CHANGELOG  (append-only — newest first)
 
 ### 2026-09-28 — created greenfield via Zeus NEW PRODUCT
-- Did: named Metis (operator-confirmed), created `intotheveil/metis`, scaffolded the house front-end
+- Did: named Themis (operator-confirmed), created `intotheveil/themis`, scaffolded the house front-end
   stack, built a dark "serious, modern" UI with a working weighted decision matrix (operator asked
   mid-build), CI + GitHub Pages deploy, crew kit from zeus `.zeus/kit/` (7 hooks, 7 agents,
   composed constitution, `settings.template.json`), this brain.
@@ -93,7 +93,7 @@ call".
 
 - **2026-09-28:** GitHub Pages + no backend yet — the operator asked for a quick Pages project and P0 stores nothing (DECISIONS.md ADR-0001).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
-- **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Metis must not manufacture confidence.
+- **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
 ---
 

@@ -1,4 +1,4 @@
-# BUILD LOG — Metis (`metis`)
+# BUILD LOG — Themis (`themis`)
 
 ## 2026-09-28 — P0 scaffold (Zeus NEW PRODUCT)
 

@@ -38,3 +38,13 @@ describe('App', () => {
     expect(screen.getByText(/leads by/)).toHaveTextContent('Option A leads by 75 points')
   })
 })
+
+describe('brand', () => {
+  it('carries the Themis wordmark and presents unbuilt modules as roadmap, not features', () => {
+    render(<App />)
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('THEMIS')
+    const roadmap = screen.getByRole('list', { name: 'Planned modules' })
+    expect(within(roadmap).getByText('SWOT analysis')).toBeInTheDocument()
+    expect(screen.getByText(/Not live yet/)).toBeInTheDocument()
+  })
+})

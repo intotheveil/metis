@@ -2,9 +2,9 @@
      CORE    (§0 §3 §4 §5 §6 §7 §9 §10) come from .zeus/kit/CLAUDE.core.md and are synced fleet-wide.
      PROJECT (§1 §2 §8 §11) come from this repo's .claude/CLAUDE.project.md and are yours.
      Edit a CORE section in the kit, not here, or the next sync will overwrite it.
-     Composed 2026-09-28T15:46:58.339Z for metis. -->
+     Composed 2026-09-28T15:55:20.601Z for themis. -->
 
-# PROJECT CONSTITUTION — metis
+# PROJECT CONSTITUTION — themis
 
 <!-- KIT:CORE:BEGIN §0 -->
 ## 0. The loop (every session, no exceptions)
@@ -52,9 +52,9 @@ informed as the chat that got too big. Start new chats freely — nothing is los
 
 ## 1. What this project is
 
-- **Product:** Metis — AI-assisted decision-making for Waterfall, Agile and YOLO teams, from
+- **Product:** Themis — AI-assisted decision-making for Waterfall, Agile and YOLO teams, from
   startups to enterprises.
-- **Repo:** `metis` (`intotheveil/metis`) · live at https://intotheveil.github.io/metis/
+- **Repo:** `themis` (`intotheveil/themis`) · live at https://intotheveil.github.io/themis/
 - **Users:** project leads, PMOs and founders making structured delivery decisions.
 - **Definition of done for a feature:** merged to `main`, lint + typecheck + tests green, the
   Pages deploy succeeds, no console errors, feature reachable in the UI.
@@ -71,7 +71,7 @@ informed as the chat that got too big. Start new chats freely — nothing is los
   tests is not done.
 - Package manager: **npm** — npm only, never introduce pnpm/yarn/bun lockfiles.
 - Hosting/deploy: **GitHub Pages** via `.github/workflows/deploy.yml` on push to `main`;
-  served under the `/metis/` base path.
+  served under the `/themis/` base path.
 - Migrations: none yet. When Supabase arrives: local timestamped SQL files committed to the
   repo AND applied live; the committed files are the source of truth.
 
@@ -245,8 +245,8 @@ production errors — investigate a fingerprint once, record the close-out, neve
 
 ## 11. Project-specific reminders
 
-- **GitHub Pages base path.** `vite.config.ts` sets `base: '/metis/'`; an absolute `/asset`
-  URL 404s in production while working in dev. Reference public files as `/metis/…` or import them.
+- **GitHub Pages base path.** `vite.config.ts` sets `base: '/themis/'`; an absolute `/asset`
+  URL 404s in production while working in dev. Reference public files as `/themis/…` or import them.
 - **Static site = everything shipped is public.** Never put an API key (Anthropic or otherwise)
   in client code or a `VITE_*` var — Vite inlines it into the bundle. The AI analyst needs a
   server-side proxy (e.g. a Supabase Edge Function) first; that is an ADR, not a shortcut.

@@ -1,4 +1,4 @@
-# DECISIONS — Metis (`metis`)
+# DECISIONS — Themis (`themis`)
 
 Dated, append-only. Any non-obvious choice lands here (CLAUDE.md §5).
 
@@ -14,7 +14,7 @@ repo itself.
 
 **Consequences.** (1) Everything in the bundle is public, so the AI analyst CANNOT call a model
 from the browser with a key; it needs a server-side proxy (Supabase Edge Function is the house
-answer) — that phase reopens this ADR. (2) Assets resolve under `/metis/`. (3) CLAUDE.md §9's P1
+answer) — that phase reopens this ADR. (2) Assets resolve under `/themis/`. (3) CLAUDE.md §9's P1
 (data spine) and P2 (auth) are deferred, not skipped: they begin when persistence does.
 
 ## 2026-09-28 — NEW PRODUCT step 4: no `BRAIN_DISCIPLINE.md` append

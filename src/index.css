@@ -2,15 +2,17 @@
 
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Cinzel', 'Trajan Pro', Georgia, serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --color-ink-950: #070b14;
-  --color-ink-900: #0b1220;
-  --color-ink-850: #0f1829;
-  --color-ink-800: #141f33;
-  --color-ink-700: #1e2b43;
-  --color-ink-600: #2c3c5a;
-  --color-accent: #7dd3fc;
-  --color-accent-strong: #38bdf8;
+  /* Warm near-black, from the brand artwork: marble statue on black, gold leaf. */
+  --color-ink-950: #070605;
+  --color-ink-900: #0d0b09;
+  --color-ink-850: #13100c;
+  --color-ink-800: #1a1611;
+  --color-ink-700: #2a2319;
+  --color-ink-600: #3d3325;
+  --color-accent: #e3b964;
+  --color-accent-strong: #c9973f;
 }
 
 html {
@@ -18,17 +20,29 @@ html {
 }
 
 body {
-  @apply bg-ink-950 text-slate-200 font-sans antialiased;
+  @apply bg-ink-950 font-sans text-stone-200 antialiased;
   background-image:
-    radial-gradient(60rem 30rem at 85% -10%, rgb(56 189 248 / 0.08), transparent 60%),
-    radial-gradient(40rem 25rem at -10% 10%, rgb(99 102 241 / 0.07), transparent 60%);
+    radial-gradient(55rem 32rem at 50% -8%, rgb(227 185 100 / 0.11), transparent 62%),
+    radial-gradient(40rem 25rem at 100% 40%, rgb(201 151 63 / 0.05), transparent 60%);
   background-attachment: fixed;
 }
 
 ::selection {
-  background: rgb(125 211 252 / 0.3);
+  background: rgb(227 185 100 / 0.3);
 }
 
 input[type='range'] {
   accent-color: var(--color-accent-strong);
+}
+
+/* Gold-leaf wordmark: a vertical metallic gradient clipped to the letters. */
+.text-gold {
+  background: linear-gradient(180deg, #fff3d1 0%, #f0cf86 38%, #c9973f 62%, #8a6325 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.rule-gold {
+  background: linear-gradient(90deg, transparent, rgb(227 185 100 / 0.7), transparent);
 }
