@@ -79,3 +79,16 @@ go) contain.
 **Consequences.** Exposing schema `themis` to the Data API and adding Themis's URL to the shared auth
 redirect list are project-settings changes on a live production project: operator checkpoints, recorded
 in BOTH brains. Auth templates and providers are project-wide: changing them affects Hephaestus.
+
+## 2026-09-28 — P1.2 gate choices
+
+- **The gate applies the whole archive TWICE.** CLAUDE.md §3.3 says every migration is
+  idempotent-safe; the second pass is what proves it. It binds every later migration: use
+  `if not exists`, `create or replace`, `drop policy if exists` before `create policy`, and
+  `do $$ … exception when duplicate_object` for enums.
+- **`alter default privileges in schema themis revoke execute on functions from public`** in the
+  bootstrap. Postgres grants EXECUTE to PUBLIC on every new function, which would hand anon every
+  Themis RPC; an RPC now grants EXECUTE to `authenticated` explicitly. (Default privileges are
+  per creating role: `postgres` in both PGlite and the Management API.)
+- **The shim's `service_role` has BYPASSRLS**, as on the real platform, so service-only tables
+  behave in the gate as they do live.

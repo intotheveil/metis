@@ -23,3 +23,19 @@
   `db:gate:prove-red`, `db:apply`, e2e in P2, never `supabase db push`/`link`); BRAIN §2/§3/§6/§7.
   CLAUDE.md recomposed via `kit.mjs apply`, `kit.mjs check` canonical. No migration, no live DB touched.
 - Next: P1.2.
+
+## 2026-09-28 — P1.2 `db:gate` harness and bootstrap migration
+
+- Did: `npm run db:gate` (`scripts/db-gate.mjs`, PGlite 0.5.8 devDep) on the argus-news pattern —
+  in-memory, `DB_GATE_MIGRATIONS` override, exit 1 on any FAIL, "no migrations found" is a FAIL.
+  `scripts/db-gate/shim.mjs` dresses the db as the SHARED project: roles anon/authenticated/
+  service_role (bypassrls), `auth.uid()`/`auth.users`, Supabase default privileges in `public`,
+  a Hephaestus-shaped `public` (organizations, profiles, memberships, workspaces, tasks; RLS on)
+  and `supabase_migrations.schema_migrations` with 25 rows. Nothing is pre-granted on `themis`.
+  Migration added: `supabase/migrations/20260928200000_themis_schema.sql` (schema, `schema_migrations`
+  with RLS/no policies/no API grants, `touch_updated_at()` with `search_path=''`, USAGE to the
+  three API roles, default-privileges revoke of EXECUTE from PUBLIC in `themis`).
+- Passed: `npm run db:gate` → 17 PASS, `GATE PASSED`, exit 0. Proven RED (exit 1) on: empty dir,
+  missing dir, the USAGE grant removed (3 FAIL lines), a non-idempotent migration, a SQL error.
+  lint, typecheck, 17 tests green. No live project touched.
+- Next: P1.3 (static migration guard).

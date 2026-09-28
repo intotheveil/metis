@@ -45,6 +45,13 @@ call".
   `SUPABASE_ACCESS_TOKEN` + `THEMIS_SUPABASE_PROJECT_REF`, dry-run default). No trigger on
   `auth.users`; Edge Functions `themis-*`, secrets `THEMIS_*`; workspace logo stored in
   `themis.workspaces`, not Storage. Rulebook: `zeus/specs/THEMIS_SPEC.md` §5a.
+  **Gate (P1.2):** `scripts/db-gate.mjs` + `scripts/db-gate/shim.mjs` (PGlite). The shim = API roles
+  (service_role BYPASSRLS), `auth.uid()`/`auth.users`, Supabase default privileges in `public`, a
+  Hephaestus-shaped `public` (organizations/profiles/memberships/workspaces/tasks) and
+  `supabase_migrations.schema_migrations` with 25 rows; NOTHING pre-granted on `themis`. The gate
+  applies the archive twice (idempotency). Bootstrap `20260928200000_themis_schema.sql`: schema,
+  `themis.schema_migrations` (RLS, no policy, no API grant), `themis.touch_updated_at()`, USAGE to
+  anon/authenticated/service_role, EXECUTE revoked from PUBLIC by default in `themis`.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -59,7 +66,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **What's live:** P0 shell + a working client-side weighted decision matrix with
   Waterfall/Agile/YOLO × small/mid/enterprise criteria presets. 16 tests (12 model, 4 UI), black-and-gold Themis brand.
 - **What's in progress:** P1 (data spine) per `PLAN.md`. P1.1 done: ADR-0002 + constitution
-  §2/§8/§11 for the shared database. The `db:*` scripts named in §8 arrive in P1.2/P1.9/P1.11.
+  §2/§8/§11 for the shared database. P1.2 done: `npm run db:gate` + bootstrap migration (local
+  only, nothing applied live). `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -79,6 +87,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 5. GOTCHAS (hard-won "don't do X, it breaks Y")
 
+- **Every migration must survive being run twice** — `db:gate` re-applies the whole archive.
+  `create policy` and `create type` have no `if not exists`: use `drop policy if exists` first and a
+  `do $$ … exception when duplicate_object` block for enums.
+- **Postgres grants EXECUTE on new functions to PUBLIC.** The bootstrap revokes that by default in
+  `themis`, so an RPC for signed-in users needs an explicit `grant execute … to authenticated`.
+
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
   `import.meta.env.BASE_URL`, never a hard-coded path, so a move back under a path stays a one-line change.
 - **The kit's `format.sh` rewrites files on Write/Edit here** (this repo HAS a prettier config),
@@ -97,6 +111,14 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.2) — `db:gate` harness and bootstrap migration
+
+- Did: PGlite gate + shared-project shim + `20260928200000_themis_schema.sql` (see §2). Gate: 17
+  PASS, exit 0; proven RED on empty/missing dir, removed USAGE grant, non-idempotent file, SQL
+  error. lint/typecheck/17 tests green. No live project touched.
+- Decided: archive applied twice; default EXECUTE revoked from PUBLIC in `themis` (DECISIONS.md).
+- Left off: P1.3 (static migration guard, called first by `db-gate.mjs`).
 
 ### 2026-09-28 (P1.1) — ADR-0002: shared Supabase, own schema `themis`
 
@@ -157,6 +179,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 - **2026-09-28:** GitHub Pages + no backend yet — the operator asked for a quick Pages project and P0 stores nothing (DECISIONS.md ADR-0001).
 - **2026-09-28:** shared Supabase `lss-platform`, schema `themis` only, own `themis.schema_migrations`, Management-API applier, never `db push` (DECISIONS.md ADR-0002; supersedes ADR-0001's no-Supabase clause).
+- **2026-09-28:** `db:gate` applies the archive twice (idempotency proof); `themis` revokes default EXECUTE from PUBLIC (DECISIONS.md, P1.2).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
