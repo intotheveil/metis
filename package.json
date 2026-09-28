@@ -12,7 +12,8 @@
     "test": "vitest run",
     "format": "prettier --write .",
     "db:gate": "node scripts/db-gate.mjs",
-    "db:check": "node scripts/check-migrations.mjs"
+    "db:check": "node scripts/check-migrations.mjs",
+    "db:gate:prove-red": "node scripts/db-gate-prove-red.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

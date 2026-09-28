@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.8 leak suite in db:gate) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.9 db:gate:prove-red) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -82,6 +82,11 @@ call".
   the decision.ts enums); coverage (a catalogue table without an entry is RED); the seeded orphan scan; and the A/B matrix with
   controls and the positive path (290 PASS lines). **A new table = a LEAK_MATRIX entry + fixture rows in seedFixture**, or the
   gate goes red.
+  **Prove-red (P1.9):** `scripts/db-gate-prove-red.mjs` (`npm run db:gate:prove-red`). Its `SABOTAGES` array (34: PLAN
+  a–f, the P1.8 mutations, non-idempotent, apply error) pairs each SQL with the red line(s) it must produce. Each run
+  appends ONE `29991231235959_themis_zz_sabotage.sql` to a temp copy (os.tmpdir, removed by the script) and runs the
+  gate with `DB_GATE_MIGRATIONS`. RED = exit 1 + every expected line + no `GATE PASSED`; plus a control that must pass.
+  Parallel (`--jobs`, default min(8, cores)), about 40 s; `--only id,…` for one. **A new gate check = a new SABOTAGES entry.**
   Its P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 `TABLES`. Scope
   each later exact-set assertion to its own tables in the same way.
   **Decision core (P1.5):** `20260928220000_themis_decisions.sql` adds `decisions` (lineage_id,
@@ -151,14 +156,14 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 4. OUTSTANDING (the triage queue)
 
-| id  | sev | type       | summary                                                                                                                                                                                                                                                            | status | added      |
-| --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------- |
-| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                | open   | 2026-09-28 |
+| id  | sev | type       | summary                                                                                                                                                                                                                                                            | status                                                                                                                | added      |
+| --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------- |
+| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                | open                                                                                                                  | 2026-09-28 |
 | B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
-| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open   | 2026-09-28 |
-| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open   | 2026-09-28 |
-| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | open   | 2026-09-28 |
-| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                      | open   | 2026-09-28 |
+| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open                                                                                                                  | 2026-09-28 |
+| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open                                                                                                                  | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | open                                                                                                                  | 2026-09-28 |
+| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                      | open                                                                                                                  | 2026-09-28 |
 
 ---
 
@@ -208,6 +213,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   deletion on Hephaestus's side, in the live project. Before guarding a table, list every FK INTO it
   (`pg_constraint where conrelid = <table>` with confdeltype `n`/`c`/`d`) and let exactly that action through, as
   `20260928235500` does. Grants are not the issue: RI actions run as the table owner. Found in the P1.7 tests.
+- **The gate's verdict lines do not start with `FAIL`.** `GATE FAILED — …`, `APPLY FAILED` and `MIGRATION GUARD FAILED`
+  are separate from the `FAIL  <check>` lines. Grepping only `^FAIL` for them misses them (the first P1.9 run went 31/34
+  on exactly that). prove-red's `RED_LINE` matches all four. Found in P1.9.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -228,6 +236,20 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.9) — `npm run db:gate:prove-red`: the gate is proven RED
+
+- Did: NEW `scripts/db-gate-prove-red.mjs` and a `package.json` script (see §2). 34 sabotages, each appended as one last
+  migration to a temp copy of the archive: PLAN (a)–(f), the 28 P1.8 mutations rewritten (their SQL had never been
+  committed), a non-idempotent CREATE and an apply error. Each must exit 1 AND print its expected red line(s); a control
+  on the untouched copy must pass. Result: `PROVE-RED PASSED — 34/34 … control GREEN`, wall about 40 s with 8 jobs. The
+  prover was proven too: three wrong expectations reported "red for the WRONG reason", and a benign sabotage reported
+  "the gate PASSED" and exited 1. lint, typecheck, 432 tests, db:check and db:gate are green. `supabase/` is untouched.
+  Nothing is live, and nothing is pushed.
+- Decided: the sabotages live as data in the script (P1.9's file scope), and exit 1 without the expected line is not
+  RED (DECISIONS.md P1.9).
+- Left off: P1.10 (CI runs db:check, db:gate and db:gate:prove-red), ∥ P1.11, P1.12. A new gate check needs its
+  own SABOTAGES entry.
 
 ### 2026-09-28 (P1.8) — the leak suite: structural and functional gates in `db:gate`
 
@@ -437,6 +459,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** approvals are append-only (admin|owner INSERT, no UPDATE/DELETE); only a comment's author edits it; risk exposure is never stored (DECISIONS.md P1.6).
 - **2026-09-28:** billing and AI ledgers (ai_runs, subscriptions, usage_monthly) are client read-only, service_role writes; audit_log is append-only for every role (trigger); plans is public reference data seeded with UNCONFIRMED proposal values (DECISIONS.md P1.7).
 - **2026-09-28:** audit_log's append-only trigger permits only the actor FK's SET NULL (actor → NULL, all else unchanged); no role gains UPDATE (DECISIONS.md "audit_log actor erasure").
+- **2026-09-28:** `db:gate:prove-red` counts a sabotage as RED only on exit 1 AND its expected FAIL line(s), with a green control run; sabotages are data in the script (DECISIONS.md P1.9).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

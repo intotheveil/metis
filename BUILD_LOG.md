@@ -561,3 +561,47 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - Next: builder decides the default-privileges finding, then P1.9 (`db:gate:prove-red`). Mutation 13's lines and the FAIL
   names above are what P1.9 can grep for. Sabotage (f), dropping the scores composite FK, is caught by the scores
   cross-child line.
+
+## 2026-09-28 — P1.9 prove the gate RED: `npm run db:gate:prove-red`
+
+- Did: NEW `scripts/db-gate-prove-red.mjs` and the `db:gate:prove-red` script in `package.json`. No other file changed.
+  `supabase/` and the gate are untouched.
+  - **Sabotages are data.** `SABOTAGES` is an array in the script. Each entry has an `id`, the PLAN letter (a)–(f)
+    where one applies, a description, the SQL, and `expect`: the gate red line(s) it MUST produce (substring or RegExp).
+    There are 34: PLAN (a)–(f), the 28 P1.8 mutations rewritten (P1.8's SQL was never committed), and two P1.2 contract
+    sabotages (non-idempotent DDL, and an apply error).
+  - **Runner.** For each sabotage it copies `supabase/migrations/*.sql` into a fresh dir under
+    `os.tmpdir()/themis-prove-red-*` and adds ONE file, `29991231235959_themis_zz_sabotage.sql`, which sorts last and
+    passes the filename rule. It then runs `db-gate.mjs` with `DB_GATE_MIGRATIONS` as a child process. A sabotage
+    counts as RED only if the exit code is exactly 1, every `expect` item matches a red line (`FAIL…`, `GATE FAILED`,
+    `APPLY FAILED`, `MIGRATION GUARD FAILED`), and `GATE PASSED` is absent. A **control** run on the untouched copy must
+    exit 0 with `GATE PASSED` and no FAIL line. Runs are parallel (default `min(8, cores)`; `--jobs N` or env
+    `PROVE_RED_JOBS`), and `--only id,…` runs a subset for debugging. The temp root is removed in `finally`, on exit and on
+    SIGINT/SIGTERM (0 leftover dirs after the runs). Output is one line per sabotage, then a PASSED/FAILED summary with
+    the wall time. It exits 0 only if the control is green and all sabotages are red on their lines.
+  - (d) `create table public.x` and (e) `create trigger … on auth.users` expect the static guard (`[forbidden-schema]`,
+    `[auth-users-trigger]`) plus `GATE FAILED — the static migration guard is red`, which PLAN allows. Their string-built
+    evasions (`public-function-evading-guard`, `auth-users-trigger-evading-guard`) expect the post-apply diff and
+    auth.users trigger lines.
+- Observed output (`npm run db:gate:prove-red`, 8 jobs, 24-core desktop):
+  - `GREEN  control — the untouched archive copy: exit 0, GATE PASSED, 290 PASS`
+  - (a) decisions-select-true: 3 FAIL, 3 expected; (b) scores-rls-disabled: 6 FAIL, 2 expected (RLS line "— scores" and
+    "themis.scores: UB reads ZERO rows of A"); (c) table-without-leak-entry: "NO ENTRY: leaky" + RLS; (d) public-table:
+    guard; (e) auth-users-trigger: guard; (f) scores-composite-fk-dropped: "themis.scores: UB's child row (workspace B)
+    pointing at A's parent is refused".
+  - The other 28 are all RED on their expected lines, including helper-returns-true (14 FAIL lines) and the two
+    guard-blind evasions.
+  - `PROVE-RED PASSED — 34/34 sabotages went RED on the expected FAIL line (PLAN P1.9 a, b, c, d, e, f included); control
+    GREEN. Wall 45.1s.` Runs took 36–45 s (one gate run takes about 12 s alone, about 10 s each in parallel, about 0.2 s
+    for guard-caught ones).
+- The prover was proven too. My first run went `PROVE-RED FAILED — 31/34`, because three expectations named verdict
+  lines that do not start with `FAIL`. The runner reported them as "red for the WRONG reason" and showed the lines it
+  saw. That is why red lines now include the verdict lines. A scratch copy (in the scratchpad, not committed) replaced
+  (f)'s SQL with a benign `comment on table`. It printed `WRONG (f) … the gate PASSED — the sabotage was not caught` and
+  exited 1.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate && npm run
+  db:gate:prove-red`, all exit 0. 432 tests; the guard passes 6 files; the gate reports 290 PASS; prove-red 34/34 +
+  control. No live Supabase; not pushed.
+- Next: test-writer (if any: the script is its own proof), then P1.10 (CI runs `db:check`, `db:gate` and
+  `db:gate:prove-red`), ∥ P1.11, P1.12. **A new gate check should come with a new `SABOTAGES` entry** that proves it
+  red.

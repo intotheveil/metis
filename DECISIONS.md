@@ -228,3 +228,17 @@ decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_
 ## 2026-09-28 — B2: per-function EXECUTE revokes are the rule; the schema-level default is a no-op
 
 The bootstrap statement `alter default privileges in schema themis revoke execute on functions from public` has no effect. Postgres cannot revoke the global PUBLIC default per schema (verified in PGlite: no pg_default_acl row). The global form would also change future functions of Hephaestus in the SHARED project, so it is rejected. **Rule:** every themis function revokes EXECUTE from public and anon explicitly in its own migration. `db:gate` fails any function PUBLIC or anon can execute, and that gate line is the enforcement. The pushed bootstrap file stays as-is (forward-only migrations); its statement is harmless.
+
+## 2026-09-28 — P1.9: prove-red sabotages live as data in the script, and must fail for the RIGHT reason
+
+- **The sabotage list is the `SABOTAGES` array inside `scripts/db-gate-prove-red.mjs`**, not a directory of `.sql`
+  files. The P1.9 file scope is that script plus `package.json`, and one array keeps each SQL next to the red line it
+  must produce. That pairing is what makes a sabotage a proof.
+- **Exit 1 alone is not RED.** Every expected line must appear, and `GATE PASSED` must be absent. A crash, or an
+  unrelated check going red, reports as "WRONG" and fails the run. A control run on the untouched copy must pass, so a
+  harness that turns everything red cannot fake the proof.
+- **Each sabotage is appended as a NEW last migration file** (`29991231235959_themis_zz_sabotage.sql`). Archive files
+  are never edited, so the gate sees the real archive state plus exactly one change, applied twice like any migration.
+  The P1.8 "archive without the P1.7 files" mutation became `drop table if exists themis.ai_runs cascade` (the same
+  stale-entry line) so that every sabotage is an append.
+- **Parallel by default (`min(8, cores)`)**: 35 gate runs take about 40 s instead of about 7 minutes serially.
