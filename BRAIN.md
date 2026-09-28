@@ -79,8 +79,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 5. GOTCHAS (hard-won "don't do X, it breaks Y")
 
-- **Pages serves under `/themis/`.** `vite.config.ts` `base` must stay `/themis/`; `index.html`'s
-  favicon is spelled `/themis/favicon.svg` for the same reason. Renaming the repo breaks every asset.
+- **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
+  `import.meta.env.BASE_URL`, never a hard-coded path, so a move back under a path stays a one-line change.
 - **The kit's `format.sh` rewrites files on Write/Edit here** (this repo HAS a prettier config),
   including `.claude/CLAUDE.project.md` — after editing that file, re-run
   `node <zeus>/.zeus/kit/kit.mjs apply themis` so the composed CLAUDE.md matches.
