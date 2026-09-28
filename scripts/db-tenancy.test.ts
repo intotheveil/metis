@@ -21,8 +21,9 @@
 // produces. One PGlite instance per file; every `actAs` session is a transaction that is ROLLED
 // BACK, so the fixture is identical for every test and the tests are order-independent.
 //
-// Extending this file (P1.5–P1.8): add a table to TENANT_TABLES with its "rows of workspace A"
-// predicate and an update probe, and the cross-workspace isolation block covers it. Use
+// Extending this file: add a new table's entry (and fixture rows) to LEAK_MATRIX/seedFixture in
+// scripts/db-gate/leak-matrix.mjs; TENANT_TABLES below is derived from it, so the cross-workspace
+// isolation block here AND the gate's leak matrix (npm run db:gate, P1.8) both cover it. Use
 // `actAs(user, s => …)` to run as a signed-in user, `actAs(ANON, …)` for the anon key, and
 // `actAs(SUPERUSER, …)` for fixture-level reads/writes that must also be rolled back.
 //
@@ -36,261 +37,75 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { HEPHAESTUS_MIGRATION_ROWS, installShim } from './db-gate/shim.mjs'
+import {
+  ANON,
+  AP,
+  AR,
+  AU,
+  C,
+  CM,
+  D,
+  LEAK_MATRIX,
+  LINEAGE_A,
+  MONTH,
+  O,
+  OLD,
+  RK,
+  SERVICE,
+  SUB,
+  SUPERUSER,
+  SW,
+  U,
+  WA,
+  WB,
+  checkValues,
+  createHarness,
+  foreignSnapshot,
+  noEffect,
+  refused,
+  seedFixture,
+  snapshot,
+} from './db-gate/leak-matrix.mjs'
+import type { Outcome, Row, Session } from './db-gate/leak-matrix.mjs'
 import { METHODOLOGIES, SCALES } from '../src/lib/decision'
 
 const MIG =
   process.env.DB_GATE_MIGRATIONS ??
   fileURLToPath(new URL('../supabase/migrations', import.meta.url))
 
-// --- fixture identities ----------------------------------------------------------------------
-const U = {
-  ownerA: '00000000-0000-4000-8000-0000000000a1',
-  adminA: '00000000-0000-4000-8000-0000000000a2',
-  editorA: '00000000-0000-4000-8000-0000000000a3',
-  viewerA: '00000000-0000-4000-8000-0000000000a4',
-  ownerB: '00000000-0000-4000-8000-0000000000b1',
-  loner: '00000000-0000-4000-8000-0000000000c1', // signed up, no workspace, no profile yet
-} as const
-const WA = '10000000-0000-4000-8000-00000000000a'
-const WB = '10000000-0000-4000-8000-00000000000b'
-const A_ONLY_USERS = [U.ownerA, U.adminA, U.editorA, U.viewerA]
-const OLD = '2000-01-01T00:00:00Z' // fixture updated_at, so a trigger bump is unmistakable
+// --- fixture, harness and leak matrix: SHARED with `npm run db:gate` (P1.8) ----------------------
+// scripts/db-gate/leak-matrix.mjs holds the fixture identities and rows (`seedFixture`, with the
+// comments that explain each row), the `actAs` harness and LEAK_MATRIX. One copy, so the gate and
+// this suite cannot disagree about what "workspace A's rows" are.
 
 const TABLES = ['profiles', 'workspaces', 'memberships', 'invites'] as const
 type Table = (typeof TABLES)[number]
-
-// --- P1.5 decision-core fixture ----------------------------------------------------------------
-// Workspace A: draft decision DA (options OA1, OA2; criteria CA1, CA2; scored cells OA1×CA1 and
-// OA2×CA1, so OA1×CA2 and OA2×CA2 are free) and a frozen, approved decision DAF (OF1 × CF1 scored).
-// Workspace B: draft decision DB_ (OB1 × CB1 scored).
-const D = {
-  A: '20000000-0000-4000-8000-00000000000a',
-  AF: '20000000-0000-4000-8000-0000000000af',
-  B: '20000000-0000-4000-8000-00000000000b',
-} as const
-const LINEAGE_A = '21000000-0000-4000-8000-00000000000a'
-const O = {
-  A1: '30000000-0000-4000-8000-0000000000a1',
-  A2: '30000000-0000-4000-8000-0000000000a2',
-  F1: '30000000-0000-4000-8000-0000000000f1',
-  B1: '30000000-0000-4000-8000-0000000000b1',
-} as const
-const C = {
-  A1: '40000000-0000-4000-8000-0000000000a1',
-  A2: '40000000-0000-4000-8000-0000000000a2',
-  F1: '40000000-0000-4000-8000-0000000000f1',
-  B1: '40000000-0000-4000-8000-0000000000b1',
-} as const
 const DECISION_TABLES = ['decisions', 'options', 'criteria', 'scores'] as const
-type DecisionTable = (typeof DECISION_TABLES)[number]
-
-// --- P1.6 analysis fixture ---------------------------------------------------------------------
-// Workspace A: SWOT SA1 (decision-level on DA, quadrant s) and SA2 (on OA1, quadrant w); risks
-// RA1 (OA1) and RA2 (OA2); comment CMA on DA written by the EDITOR; approvals APA (DA, rejected,
-// by admin) and APAF (DAF, approved, by owner). Workspace B: one of each on DB_/OB1 by ownerB.
-const SW = {
-  A1: '50000000-0000-4000-8000-0000000000a1',
-  A2: '50000000-0000-4000-8000-0000000000a2',
-  B1: '50000000-0000-4000-8000-0000000000b1',
-} as const
-const RK = {
-  A1: '60000000-0000-4000-8000-0000000000a1',
-  A2: '60000000-0000-4000-8000-0000000000a2',
-  B1: '60000000-0000-4000-8000-0000000000b1',
-} as const
-const CM = {
-  A: '70000000-0000-4000-8000-0000000000a1',
-  B: '70000000-0000-4000-8000-0000000000b1',
-} as const
-const AP = {
-  A: '80000000-0000-4000-8000-0000000000a1',
-  AF: '80000000-0000-4000-8000-0000000000af',
-  B: '80000000-0000-4000-8000-0000000000b1',
-} as const
 const ANALYSIS_TABLES = ['swot_items', 'risks', 'comments', 'approvals'] as const
 type AnalysisTable = (typeof ANALYSIS_TABLES)[number]
-
-// --- P1.7 AI, billing and audit fixture -------------------------------------------------------
-// Workspace A: ai_runs ARA (on DA, by the editor) and ARAF (on DAF); a Pro subscription; one
-// usage_monthly row for 2026-09; two audit rows (one by the VIEWER, one with no actor). Workspace
-// B: one of each (free subscription). No audit row names ownerA/adminA/editorA as actor: the
-// P1.4-P1.6 user-deletion tests delete those users (see the P1.7 cascade tests for why).
-const AR = {
-  A: '90000000-0000-4000-8000-0000000000a1',
-  AF: '90000000-0000-4000-8000-0000000000af',
-  B: '90000000-0000-4000-8000-0000000000b1',
-} as const
-const SUB = {
-  A: '91000000-0000-4000-8000-0000000000a1',
-  B: '91000000-0000-4000-8000-0000000000b1',
-} as const
-const AU = {
-  A1: '92000000-0000-4000-8000-0000000000a1',
-  A2: '92000000-0000-4000-8000-0000000000a2',
-  B1: '92000000-0000-4000-8000-0000000000b1',
-} as const
-const MONTH = '2026-09-01'
 /** The P1.7 tenant tables (plans is reference data, not tenant data). */
 const BILLING_TABLES = ['ai_runs', 'subscriptions', 'usage_monthly', 'audit_log'] as const
-type BillingTable = (typeof BILLING_TABLES)[number]
 const P17_TABLES = ['plans', ...BILLING_TABLES] as const
 
 /**
- * The isolation matrix. `ofA` selects workspace A's rows (rows UB must never see or change);
- * `probe` is a SET clause an attacker would try. P1.5+ appends its tables here.
+ * The isolation matrix: the tenant entries of the shared LEAK_MATRIX. `ofA` selects workspace A's
+ * rows (rows UB must never see or change); `probe` is a SET clause an attacker would try. A new
+ * tenant table gets its entry in leak-matrix.mjs, and both this block and the gate cover it.
  */
-const TENANT_TABLES: {
-  table: Table | DecisionTable | AnalysisTable | BillingTable
-  ofA: string
-  probe: string
-}[] = [
-  { table: 'workspaces', ofA: `id = '${WA}'`, probe: `name = 'pwned'` },
-  { table: 'memberships', ofA: `workspace_id = '${WA}'`, probe: `role = 'viewer'` },
-  { table: 'invites', ofA: `workspace_id = '${WA}'`, probe: `role = 'owner'` },
-  {
-    table: 'profiles',
-    ofA: `user_id in (${A_ONLY_USERS.map((u) => `'${u}'`).join(',')})`,
-    probe: `display_name = 'pwned'`,
-  },
-  { table: 'decisions', ofA: `workspace_id = '${WA}'`, probe: `question = 'pwned'` },
-  { table: 'options', ofA: `workspace_id = '${WA}'`, probe: `name = 'pwned'` },
-  { table: 'criteria', ofA: `workspace_id = '${WA}'`, probe: `weight = 0` },
-  { table: 'scores', ofA: `workspace_id = '${WA}'`, probe: `value = 1` },
-  { table: 'swot_items', ofA: `workspace_id = '${WA}'`, probe: `text = 'pwned'` },
-  { table: 'risks', ofA: `workspace_id = '${WA}'`, probe: `likelihood = 1` },
-  { table: 'comments', ofA: `workspace_id = '${WA}'`, probe: `body = 'pwned'` },
-  { table: 'approvals', ofA: `workspace_id = '${WA}'`, probe: `reason = 'pwned'` },
-  { table: 'ai_runs', ofA: `workspace_id = '${WA}'`, probe: `accepted = '["pwned"]'` },
-  { table: 'subscriptions', ofA: `workspace_id = '${WA}'`, probe: `plan = 'free'` },
-  { table: 'usage_monthly', ofA: `workspace_id = '${WA}'`, probe: `ai_runs = 0` },
-  { table: 'audit_log', ofA: `workspace_id = '${WA}'`, probe: `action = 'pwned'` },
-]
+const TENANT_TABLES = LEAK_MATRIX.flatMap((e) =>
+  e.kind === 'tenant' ? [{ table: e.table, ofA: e.ofA, probe: e.probe }] : [],
+)
 
 // --- harness -----------------------------------------------------------------------------------
 const db = new PGlite()
-
-type Row = Record<string, unknown>
-type Outcome = { ok: true; affected: number } | { ok: false; error: string }
-
-const ANON = Symbol('anon')
-const SUPERUSER = Symbol('superuser')
-/** The service key (BYPASSRLS): Edge Functions and service-only RPCs (P1.7). */
-const SERVICE = Symbol('service_role')
-type Who = string | typeof ANON | typeof SUPERUSER | typeof SERVICE
-
-interface Session {
-  /** Rows of a query; throws on error (use `attempt` when an error is the expected outcome). */
-  rows<T extends Row = Row>(sql: string, params?: unknown[]): Promise<T[]>
-  /** Rows of themis.<table> visible to this identity, optionally filtered. */
-  count(table: string, where?: string): Promise<number>
-  /** Runs one statement inside a savepoint, so a refused write does not abort the session. */
-  attempt(sql: string, params?: unknown[]): Promise<Outcome>
-  /** Run `fn` as the superuser inside the same (rolled-back) transaction, then switch back. */
-  sudo<T>(fn: () => Promise<T>): Promise<T>
-}
-
-async function setIdentity(who: Who) {
-  if (who === SUPERUSER) {
-    await db.exec(`reset role`)
-    await db.query(`select set_config('request.jwt.claim.sub', '', true)`)
-  } else if (who === SERVICE) {
-    await db.exec(`set local role service_role`)
-    await db.query(`select set_config('request.jwt.claim.sub', '', true)`)
-  } else if (who === ANON) {
-    await db.exec(`set local role anon`)
-    await db.query(`select set_config('request.jwt.claim.sub', '', true)`)
-  } else {
-    await db.exec(`set local role authenticated`)
-    await db.query(`select set_config('request.jwt.claim.sub', $1, true)`, [who])
-  }
-}
-
-let savepoints = 0
-const session = (who: Who): Session => ({
-  rows: async <T extends Row = Row>(sql: string, params?: unknown[]) =>
-    (await db.query<T>(sql, params)).rows,
-  count: async (table, where = 'true') =>
-    (await db.query<{ n: number }>(`select count(*)::int as n from themis.${table} where ${where}`))
-      .rows[0].n,
-  attempt: async (sql, params) => {
-    const sp = `sp_${++savepoints}`
-    await db.exec(`savepoint ${sp}`)
-    try {
-      const r = await db.query(sql, params)
-      await db.exec(`release savepoint ${sp}`)
-      return { ok: true, affected: r.affectedRows ?? 0 }
-    } catch (e) {
-      await db.exec(`rollback to savepoint ${sp}`)
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
-    }
-  },
-  sudo: async (fn) => {
-    await setIdentity(SUPERUSER)
-    try {
-      return await fn()
-    } finally {
-      await setIdentity(who)
-    }
-  },
-})
-
-/** Act as `who` inside a transaction that is always rolled back. */
-async function actAs<T>(who: Who, fn: (s: Session) => Promise<T>): Promise<T> {
-  await db.exec('begin')
-  try {
-    await setIdentity(who)
-    return await fn(session(who))
-  } finally {
-    await db.exec('rollback')
-  }
-}
-
-const refused = (o: Outcome) =>
-  !o.ok && /permission denied|violates row-level security/.test(o.error)
-/** No effect = refused outright, or ran and touched nothing (RLS filtered every row). */
-const noEffect = (o: Outcome) => refused(o) || (o.ok && o.affected === 0)
-
-/** A content hash of the rows matching `where`, read as superuser (for before/after checks). */
-const snapshot = (s: Session, table: string, where: string) =>
-  s.sudo(async () => {
-    const r = await s.rows<{ h: string | null; n: number }>(
-      `select md5(string_agg(t::text, '|' order by t::text)) as h, count(*)::int as n
-         from themis.${table} t where ${where}`,
-    )
-    return r[0]
-  })
-
-// Snapshot of everything Themis must never change in Hephaestus's schemas.
-async function foreignSnapshot() {
-  const q = async (sql: string) => JSON.stringify((await db.query(sql)).rows)
-  return {
-    classes: await q(`select c.relname, c.relkind, c.relrowsecurity, c.relacl::text as acl
-                        from pg_class c join pg_namespace n on n.oid = c.relnamespace
-                       where n.nspname in ('public', 'auth', 'supabase_migrations')
-                       order by n.nspname, c.relname`),
-    policies: await q(`select c.relname, p.polname, p.polcmd,
-                              pg_get_expr(p.polqual, p.polrelid) as qual,
-                              pg_get_expr(p.polwithcheck, p.polrelid) as chk
-                         from pg_policy p join pg_class c on c.oid = p.polrelid
-                         join pg_namespace n on n.oid = c.relnamespace
-                        where n.nspname in ('public', 'auth') order by 1, 2`),
-    functions: await q(`select n.nspname, p.proname, p.prosrc, p.proacl::text as acl
-                          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-                         where n.nspname in ('public', 'auth') order by 1, 2`),
-    triggers: await q(`select c.relname, t.tgname from pg_trigger t
-                         join pg_class c on c.oid = t.tgrelid
-                         join pg_namespace n on n.oid = c.relnamespace
-                        where n.nspname in ('public', 'auth') and not t.tgisinternal
-                        order by 1, 2`),
-  }
-}
+const { actAs } = createHarness(db)
 
 let foreignBefore: Awaited<ReturnType<typeof foreignSnapshot>>
 let foreignAfter: Awaited<ReturnType<typeof foreignSnapshot>>
 
 beforeAll(async () => {
   await installShim(db)
-  foreignBefore = await foreignSnapshot()
+  foreignBefore = await foreignSnapshot(db)
 
   const files = readdirSync(MIG)
     .filter((f) => f.endsWith('.sql'))
@@ -298,91 +113,10 @@ beforeAll(async () => {
   // Twice, exactly as the gate does: the state under test is the RE-APPLIED archive.
   for (let pass = 0; pass < 2; pass++)
     for (const f of files) await db.exec(readFileSync(path.join(MIG, f), 'utf8'))
-  foreignAfter = await foreignSnapshot()
+  foreignAfter = await foreignSnapshot(db)
 
   // Fixture, committed as superuser. Every test's writes are rolled back by actAs.
-  const users = Object.values(U)
-  await db.exec(`
-    insert into auth.users (id, email) values
-      ${users.map((u, i) => `('${u}', 'u${i}@example.com')`).join(',\n      ')};
-    insert into themis.workspaces (id, name, created_by, updated_at) values
-      ('${WA}', 'Workspace A', '${U.ownerA}', '${OLD}'),
-      ('${WB}', 'Workspace B', '${U.ownerB}', '${OLD}');
-    insert into themis.memberships (workspace_id, user_id, role, updated_at) values
-      ('${WA}', '${U.ownerA}', 'owner', '${OLD}'),
-      ('${WA}', '${U.adminA}', 'admin', '${OLD}'),
-      ('${WA}', '${U.editorA}', 'editor', '${OLD}'),
-      ('${WA}', '${U.viewerA}', 'viewer', '${OLD}'),
-      ('${WB}', '${U.ownerB}', 'owner', '${OLD}');
-    insert into themis.profiles (user_id, display_name, updated_at) values
-      ('${U.ownerA}', 'Owner A', '${OLD}'), ('${U.adminA}', 'Admin A', '${OLD}'),
-      ('${U.editorA}', 'Editor A', '${OLD}'), ('${U.viewerA}', 'Viewer A', '${OLD}'),
-      ('${U.ownerB}', 'Owner B', '${OLD}');
-    insert into themis.invites (workspace_id, email, role, token_hash, expires_at, updated_at) values
-      ('${WA}', 'new-a@example.com', 'editor', repeat('a', 64), now() + interval '7 days', '${OLD}'),
-      ('${WB}', 'new-b@example.com', 'viewer', repeat('b', 64), now() + interval '7 days', '${OLD}');
-    insert into themis.decisions (id, workspace_id, lineage_id, question, methodology, scale, status,
-                                  frozen, approved_by, approved_at, created_by, updated_at) values
-      ('${D.A}', '${WA}', '${LINEAGE_A}', 'Draft A', 'agile', 'mid', 'draft',
-       false, null, null, '${U.ownerA}', '${OLD}'),
-      ('${D.AF}', '${WA}', gen_random_uuid(), 'Approved A', 'waterfall', 'enterprise', 'approved',
-       true, '${U.ownerA}', now(), '${U.ownerA}', '${OLD}'),
-      ('${D.B}', '${WB}', gen_random_uuid(), 'Draft B', 'yolo', 'small', 'draft',
-       false, null, null, '${U.ownerB}', '${OLD}');
-    insert into themis.options (id, workspace_id, decision_id, name, position, updated_at) values
-      ('${O.A1}', '${WA}', '${D.A}', 'Option A1', 0, '${OLD}'),
-      ('${O.A2}', '${WA}', '${D.A}', 'Option A2', 1, '${OLD}'),
-      ('${O.F1}', '${WA}', '${D.AF}', 'Option F1', 0, '${OLD}'),
-      ('${O.B1}', '${WB}', '${D.B}', 'Option B1', 0, '${OLD}');
-    insert into themis.criteria (id, workspace_id, decision_id, name, weight, position, updated_at) values
-      ('${C.A1}', '${WA}', '${D.A}', 'Cost', 4, 0, '${OLD}'),
-      ('${C.A2}', '${WA}', '${D.A}', 'Risk', 2, 1, '${OLD}'),
-      ('${C.F1}', '${WA}', '${D.AF}', 'Speed', 3, 0, '${OLD}'),
-      ('${C.B1}', '${WB}', '${D.B}', 'Cost', 5, 0, '${OLD}');
-    insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value, updated_at) values
-      ('${WA}', '${D.A}', '${O.A1}', '${C.A1}', 4, '${OLD}'),
-      ('${WA}', '${D.A}', '${O.A2}', '${C.A1}', 2, '${OLD}'),
-      ('${WA}', '${D.AF}', '${O.F1}', '${C.F1}', 5, '${OLD}'),
-      ('${WB}', '${D.B}', '${O.B1}', '${C.B1}', 3, '${OLD}');
-    insert into themis.swot_items (id, workspace_id, decision_id, option_id, quadrant, text,
-                                   created_by, updated_at) values
-      ('${SW.A1}', '${WA}', '${D.A}', null, 's', 'Decision-level strength', '${U.editorA}', '${OLD}'),
-      ('${SW.A2}', '${WA}', '${D.A}', '${O.A1}', 'w', 'A1 weakness', '${U.editorA}', '${OLD}'),
-      ('${SW.B1}', '${WB}', '${D.B}', '${O.B1}', 'o', 'B1 opportunity', '${U.ownerB}', '${OLD}');
-    insert into themis.risks (id, workspace_id, decision_id, option_id, title, likelihood, impact,
-                              created_by, updated_at) values
-      ('${RK.A1}', '${WA}', '${D.A}', '${O.A1}', 'Vendor lock-in', 4, 5, '${U.editorA}', '${OLD}'),
-      ('${RK.A2}', '${WA}', '${D.A}', '${O.A2}', 'Slow hiring', 2, 3, '${U.editorA}', '${OLD}'),
-      ('${RK.B1}', '${WB}', '${D.B}', '${O.B1}', 'B risk', 3, 3, '${U.ownerB}', '${OLD}');
-    insert into themis.comments (id, workspace_id, decision_id, body, author, created_by,
-                                 updated_at) values
-      ('${CM.A}', '${WA}', '${D.A}', 'Editor comment', '${U.editorA}', '${U.editorA}', '${OLD}'),
-      ('${CM.B}', '${WB}', '${D.B}', 'B comment', '${U.ownerB}', '${U.ownerB}', '${OLD}');
-    insert into themis.approvals (id, workspace_id, decision_id, verdict, reason, actor, created_by,
-                                  updated_at) values
-      ('${AP.A}', '${WA}', '${D.A}', 'rejected', 'Not ready', '${U.adminA}', '${U.adminA}', '${OLD}'),
-      ('${AP.AF}', '${WA}', '${D.AF}', 'approved', 'Go', '${U.ownerA}', '${U.ownerA}', '${OLD}'),
-      ('${AP.B}', '${WB}', '${D.B}', 'approved', 'B go', '${U.ownerB}', '${U.ownerB}', '${OLD}');
-    insert into themis.ai_runs (id, workspace_id, decision_id, kind, model, status, input_snapshot,
-                                output, tokens_in, tokens_out, cost_eur, created_by, updated_at) values
-      ('${AR.A}', '${WA}', '${D.A}', 'challenge', 'model-x', 'succeeded', '{"q":"A"}',
-       '{"s":[]}', 100, 50, 0.0123, '${U.editorA}', '${OLD}'),
-      ('${AR.AF}', '${WA}', '${D.AF}', 'explain', 'model-x', 'succeeded', '{"q":"AF"}',
-       '{"s":[]}', 80, 40, 0.0100, '${U.ownerA}', '${OLD}'),
-      ('${AR.B}', '${WB}', '${D.B}', 'challenge', 'model-x', 'succeeded', '{"q":"B"}',
-       '{"s":[]}', 90, 30, 0.0090, '${U.ownerB}', '${OLD}');
-    insert into themis.subscriptions (id, workspace_id, stripe_customer_id, stripe_subscription_id,
-                                      plan, seats, status, updated_at) values
-      ('${SUB.A}', '${WA}', 'cus_A1', 'sub_A1', 'pro', 1, 'active', '${OLD}'),
-      ('${SUB.B}', '${WB}', null, null, 'free', 1, 'active', '${OLD}');
-    insert into themis.usage_monthly (workspace_id, month, ai_runs, ai_cost_eur, updated_at) values
-      ('${WA}', '${MONTH}', 2, 0.0223, '${OLD}'),
-      ('${WB}', '${MONTH}', 1, 0.0090, '${OLD}');
-    insert into themis.audit_log (id, workspace_id, actor, entity, entity_id, action, after) values
-      ('${AU.A1}', '${WA}', '${U.viewerA}', 'comment', gen_random_uuid(), 'insert', '{"body":"x"}'),
-      ('${AU.A2}', '${WA}', null, 'subscription', '${SUB.A}', 'update', '{"plan":"pro"}'),
-      ('${AU.B1}', '${WB}', '${U.ownerB}', 'decision', '${D.B}', 'insert', '{}');
-  `)
+  await seedFixture(db)
 }, 60_000)
 
 // =================================================================================================
@@ -1070,26 +804,14 @@ describe("Hephaestus's side of the shared project is untouched", () => {
 })
 
 describe('decision core (P1.5): the DB enums match src/lib/decision.ts exactly', () => {
-  // The allowed values of a CHECK (col in (...)) constraint on themis.decisions, read back from
-  // the catalog, so a value added on only one side (TS or SQL) turns this RED.
-  const allowed = async (col: string) => {
-    const r = await db.query<{ def: string }>(
-      `select pg_get_constraintdef(c.oid) as def
-         from pg_constraint c
-         join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
-        where c.conrelid = 'themis.decisions'::regclass and c.contype = 'c'
-          and a.attname = $1 and cardinality(c.conkey) = 1`,
-      [col],
-    )
-    expect(r.rows, `one single-column CHECK on decisions.${col}`).toHaveLength(1)
-    return [...r.rows[0].def.matchAll(/'([^']*)'::text/g)].map((m) => m[1]).sort()
-  }
-
+  // The allowed values of the single-column CHECK (col in (...)) on themis.decisions, read back
+  // from the catalog (checkValues, shared with the gate), so a value added on only one side (TS or
+  // SQL) turns this RED. checkValues is null unless exactly one such CHECK exists.
   it.each([
     ['methodology', Object.keys(METHODOLOGIES)],
     ['scale', Object.keys(SCALES)],
   ])('decisions.%s allows exactly the decision.ts values', async (col, ts) => {
-    expect(await allowed(col)).toEqual([...ts].sort())
+    expect(await checkValues(db, 'decisions', col)).toEqual([...ts].sort())
   })
 })
 

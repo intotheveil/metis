@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (audit actor-erasure fix) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.8 leak suite in db:gate) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -51,7 +51,8 @@ call".
   `supabase_migrations.schema_migrations` with 25 rows; NOTHING pre-granted on `themis`. The gate
   applies the archive twice (idempotency). Bootstrap `20260928200000_themis_schema.sql`: schema,
   `themis.schema_migrations` (RLS, no policy, no API grant), `themis.touch_updated_at()`, USAGE to
-  anon/authenticated/service_role, EXECUTE revoked from PUBLIC by default in `themis`.
+  anon/authenticated/service_role, and an `alter default privileges in schema themis revoke execute … from public`
+  that is a NO-OP (see §5; found in P1.8, open for the builder).
   **Static guard (P1.3):** `scripts/check-migrations.mjs` (`npm run db:check [dir]`), run FIRST by
   `db:gate`, which applies nothing if the guard is red. It prints `file:line [rule]` with the rules
   `filename`, `forbidden-schema` (public/auth/storage/supabase_migrations: qualified, `schema x`
@@ -69,8 +70,18 @@ call".
   INSERT policy. Those writes go through P2.5/P2.6 SECURITY DEFINER RPCs. anon holds nothing.
   **Tenancy tests:** `scripts/db-tenancy.test.ts` (82 tests, 1 shared PGlite, real archive applied
   twice). Harness: `actAs(uid | ANON | SUPERUSER, s => …)` runs in an always-rolled-back transaction,
-  and `s.attempt` is savepoint-wrapped. The table-driven A/B isolation matrix is `TENANT_TABLES`, and
-  each new tenant table is appended there. `DB_GATE_MIGRATIONS` points it at a mutated archive copy.
+  and `s.attempt` is savepoint-wrapped. The table-driven A/B isolation matrix is `TENANT_TABLES`, derived
+  (P1.8) from `LEAK_MATRIX` in `scripts/db-gate/leak-matrix.mjs`. `DB_GATE_MIGRATIONS` points it at a mutated archive copy.
+  **Leak suite (P1.8):** `scripts/db-gate/leak-matrix.mjs` is the ONE home of the fixture (`seedFixture`, ids U/WA/WB/D/O/…),
+  the harness (`createHarness(db).actAs`, `refused`/`noEffect`/`snapshot`), `foreignSnapshot`, `checkValues` and
+  `LEAK_MATRIX` (one entry per themis table: tenant entries with ofA/ofB/probe/viewerReads/write/insert/cross, plus `plans`
+  as reference; `SERVICE_ONLY_TABLES = ['schema_migrations']`). Both `db-gate.mjs` and `db-tenancy.test.ts` import it.
+  `db:gate` runs, after the bootstrap checks: an 18-line structural sweep (RLS, views, policies/service-only grants, pinned
+  search_path, definer paths, anon/PUBLIC EXECUTE, policy roles with the `plans.plans_select` exception, the recursion rule,
+  helper-only workspace policies, anon = `plans.SELECT` only, the public/auth diff, the auth.users trigger, convalidated FKs,
+  the decision.ts enums); coverage (a catalogue table without an entry is RED); the seeded orphan scan; and the A/B matrix with
+  controls and the positive path (290 PASS lines). **A new table = a LEAK_MATRIX entry + fixture rows in seedFixture**, or the
+  gate goes red.
   Its P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 `TABLES`. Scope
   each later exact-set assertion to its own tables in the same way.
   **Decision core (P1.5):** `20260928220000_themis_decisions.sql` adds `decisions` (lineage_id,
@@ -99,7 +110,7 @@ call".
   INSERT only; a BEFORE UPDATE trigger raises `audit_log_append_only` for every role; rows leave only by workspace
   cascade. **Actor erasure (`20260928235500_themis_audit_actor_erasure.sql`):** the trigger function lets exactly ONE
   update through: `actor` non-null → NULL with every other column unchanged. That is the `actor → auth.users on delete
-  set null` FK action, so deleting a user (Themis or Hephaestus) works. No role holds UPDATE on audit_log; the FK action
+set null` FK action, so deleting a user (Themis or Hephaestus) works. No role holds UPDATE on audit_log; the FK action
   runs as the table owner and needs no grant.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
@@ -128,7 +139,11 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   P1.6 tests done: `db-tenancy.test.ts` covers the analysis tables too (271 tests in that file, suite total 327).
   P1.7 done (builder + tests; 432 tests in total): AI, billing, audit and plans, local only. The P1.7 tests found that
   deleting an audit actor failed. That is fixed by the new migration `20260928235500_themis_audit_actor_erasure.sql`
-  (local only, not pushed). `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.8.
+  (local only, not pushed). P1.8 done: `db:gate` now runs the structural sweep, the leak-matrix coverage check, the orphan
+  scan and the A/B leak matrix (290 PASS), sharing `scripts/db-gate/leak-matrix.mjs` with the Vitest suite (still 432
+  tests). Every new check was proven RED on a mutated archive copy. OPEN: the bootstrap's default-privileges revoke is a
+  no-op (§5, BUILD_LOG P1.8), and the builder must decide the fix. `db:gate:prove-red` and `db:apply` arrive in
+  P1.9/P1.11. Next: that decision, then P1.9.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -136,13 +151,14 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 4. OUTSTANDING (the triage queue)
 
-| id  | sev | type       | summary                                                                                                                                                        | status | added      |
-| --- | --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
-| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)            | open   | 2026-09-28 |
-| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001 | open   | 2026-09-28 |
-| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                      | open   | 2026-09-28 |
-| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                   | open   | 2026-09-28 |
-| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                  | open   | 2026-09-28 |
+| id  | sev | type       | summary                                                                                                                                                                                                                                                            | status | added      |
+| --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------- |
+| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                | open   | 2026-09-28 |
+| B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus | open   | 2026-09-28 |
+| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open   | 2026-09-28 |
+| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open   | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | open   | 2026-09-28 |
+| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                      | open   | 2026-09-28 |
 
 ---
 
@@ -155,8 +171,17 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   SQL** (the DROP verb followed by table/database/schema and a name, or TRUNCATE TABLE and a name), even inside a heredoc
   that only writes a test fixture. Put such fixture SQL in a file with the Write tool, or build it in
   the test file. Never split the string to dodge the regex. Found in P1.3.
-- **Postgres grants EXECUTE on new functions to PUBLIC.** The bootstrap revokes that by default in
-  `themis`, so an RPC for signed-in users needs an explicit `grant execute … to authenticated`.
+- **Postgres grants EXECUTE on new functions to PUBLIC, and the bootstrap does NOT stop it.** Its
+  `alter default privileges in schema themis revoke execute on functions from public` is a no-op: a per-schema
+  default can only ADD to the global defaults, never revoke them (no `pg_default_acl` row is created; a new themis
+  function has proacl NULL and anon can EXECUTE it). Every function migration must `revoke execute … from public, anon`
+  itself, and an RPC for signed-in users needs `grant execute … to authenticated`. `db:gate` now fails on any themis
+  function PUBLIC or anon can execute. Found in P1.8 (the old text of this gotcha said the opposite).
+- **The static guard (`db:check`) cannot see DDL built from strings.** `do $$ … execute 'create trigger … on au' || 'th.users …' $$`
+  or `execute format(…, 'pub' || 'lic')` passes it. The post-apply checks in `db:gate` (the public/auth diff and the
+  auth.users trigger check) are what catch those, so never weaken them because "the guard covers it". Found in P1.8.
+- **A long Bash heredoc of markdown prose can fail to parse in this tool** (`unexpected EOF while looking for matching '`)
+  even when quoted `<<'EOF'`. Write the prose with the Write tool to a scratch file and `cat >>` it. Found in P1.8.
 - **A `scripts/**/*.test.ts` file is only typechecked because of `tsconfig.scripts.json`** (allowJs,
   so the JSDoc in `.mjs` scripts types the imports). A test file elsewhere outside `src/` is run by
   Vitest and linted but NOT typechecked unless a tsconfig include covers it. Found in P1.3.
@@ -203,6 +228,25 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.8) — the leak suite: structural and functional gates in `db:gate`
+
+- Did: new `scripts/db-gate/leak-matrix.mjs`, the fixture + harness + `LEAK_MATRIX` shared by `db-gate.mjs` and
+  `db-tenancy.test.ts`. The test file now imports them, and no assertion changed (432 tests). `db-gate.mjs` gained an
+  18-line structural sweep, a 3-line coverage check derived from the catalogue (a table without an entry is RED), a seeded
+  orphan scan over all 36 FKs, and a 244-line A/B matrix. The matrix has a control for every refused INSERT and cross-child
+  row, and the positive path: UA and the declared writer write, the viewer reads but cannot write, server-written tables
+  hold no client write privilege. The gate reports 290 PASS. 28 archive-copy mutations each went RED on the expected
+  line(s) (BUILD_LOG.md P1.8). lint, typecheck, test, db:check and db:gate are green. `supabase/` is untouched, not pushed.
+- Decided: the matrix declares a writer per table (`UA`, `editor` for author-only comments, or `service` for
+  server-written tables), and the gate cross-checks `service` against the catalogue, so the "UA can write" rule does not
+  apply to tables no client may write. The enum check now runs in the gate too; the Vitest copy stays and uses the same
+  `checkValues`.
+- Found: (1) the bootstrap's per-schema default-privileges revoke is a no-op (§5), a latent bug that product code/migrations
+  must fix, not the tests; (2) the static guard misses string-built DDL (§5), and the gate's post-apply checks catch it.
+- Left off: the builder decides the default-privileges fix (NOT the global form, because that would touch Hephaestus's
+  functions), then P1.9 `db:gate:prove-red`. Its sabotage (f), dropping the scores composite FK, fails the scores
+  cross-child line.
 
 ### 2026-09-28 (fix) — audit_log actor erasure (bug found by the P1.7 tests)
 

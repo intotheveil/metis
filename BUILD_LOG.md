@@ -477,3 +477,87 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exit 0. 432 passed, 0
   expected-fail. The guard passes 6 files, and the gate applies and re-applies 6 files. No live Supabase; not pushed.
 - Next: P1.8.
+
+## 2026-09-28 — P1.8 the leak suite: structural and functional gates in `npm run db:gate`
+
+- Did: NEW `scripts/db-gate/leak-matrix.mjs`, shared by the gate AND `scripts/db-tenancy.test.ts`. It holds the fixture
+  ids and rows (`seedFixture`), the `createHarness(db).actAs` harness, `refused`/`noEffect`/`snapshot`, `foreignSnapshot`,
+  `checkValues` (the enum reader) and `LEAK_MATRIX`: one entry per themis table (16 tenant + `plans` reference;
+  `SERVICE_ONLY_TABLES = ['schema_migrations']`). The test file now imports all of these instead of defining them, so
+  `TENANT_TABLES` is derived from the matrix. No assertion was changed or removed: 432 tests before and after.
+  `scripts/db-gate.mjs` gained 3 sections after the P1.2 bootstrap checks:
+  - **Structural (18 lines):** RLS on every table; no view without security_invoker and no matview; a policy on every
+    table except the service-only ones, which hold zero anon/authenticated grants; search_path pinned on every function;
+    no SECURITY DEFINER function with public/$user/pg_temp on its path; no anon EXECUTE; no PUBLIC EXECUTE (the default
+    acl counts); no write policy for anon/PUBLIC; every policy TO authenticated except `plans.plans_select` (anon+auth,
+    SELECT only); the memberships recursion rule; workspace-scoped policies go through is_member/has_role; anon holds
+    exactly `plans.SELECT` (tables, columns, sequences); public/auth/supabase_migrations unchanged (pg_class, pg_policy,
+    pg_proc, triggers diffed before/after apply); no trigger on auth.users; every FK convalidated; methodology and scale
+    CHECKs equal `decision.ts` (imported as .ts, which works through node 24 type stripping).
+  - **Coverage (3):** every catalogue table except service-only has an entry, which **makes a new table without an
+    entry RED**; no stale entry; no duplicate entry.
+  - **Fixture + orphan scan (2):** seeds the shared fixture, then anti-joins every themis FK (36) and finds zero orphans.
+  - **Leak matrix (244 lines):** anon reads nothing in any catalogue table except exactly 3 plans rows. For each tenant
+    table: the fixture is non-vacuous; UB reads zero of A and all of B; UB's UPDATE, DELETE and INSERT into A have no
+    effect (the snapshot is identical, the INSERT is refused by privilege/RLS and leaves no row, and the same INSERT
+    succeeds as a legitimate actor as a control); for decision children, a child row with workspace_id=B pointing at A's
+    parent is refused and leaves no row (control: the same row with B's parent succeeds as service); anon's
+    UPDATE/DELETE has no effect. Positive path: UA reads all of A; the viewer reads all of A, or none where role-gated
+    (invites, audit_log); the declared writer's write takes effect (UA, the editor for comments, or service for
+    server-written tables); the viewer's UPDATE, DELETE and write have no effect; for server-written tables,
+    authenticated holds no write privilege and UA's writes have no effect. plans: 3 rows, UA and UB read 3, UA/anon
+    writes have no effect, no client write privilege.
+- Gate: 290 PASS, `GATE PASSED`, exit 0 (23 P1.2/P1.3 lines + 267 new).
+- RED evidence. Each run appended ONE sabotage file to a COPY of the archive in the scratchpad and ran the gate with
+  DB_GATE_MIGRATIONS. All exited 1:
+  - 01 `create table themis.leaky(id int)`: RLS, policy, coverage ("NO ENTRY: leaky").
+  - 02 a table with RLS, a helper policy and no matrix entry: ONLY the coverage line.
+  - 03 `create policy … on decisions for select using (true)` (TO public): TO-authenticated, helper, "UB reads ZERO rows
+    of A — 2 rows".
+  - 04 an update policy `to public`: no-write-policy-admits-anon/PUBLIC, TO-authenticated, "viewer cannot write" (3 rows
+    changed).
+  - 05 a definer function without search_path: search_path pinned, anon EXECUTE, PUBLIC EXECUTE.
+  - 06 a definer with `search_path = public`: caught first by the static guard. 06b `pg_temp, themis`: the definer-path
+    line.
+  - 07 `grant execute on has_role to public`: anon + PUBLIC EXECUTE. 08 `grant execute on is_member to anon`: anon
+    EXECUTE.
+  - 09 `grant select on decisions to anon`: "anon holds exactly SELECT on plans" (decisions.SELECT). 20 `grant insert on
+    plans to anon`: that line plus "plans: no client role holds a write privilege".
+  - 10 a policy with an inline memberships subquery: the recursion rule and the helper line.
+  - 11 methodology CHECK + 'kanban': the enum line ("db agile|kanban|waterfall|yolo vs ts …").
+  - 12 NOT VALID FK plans → workspaces with dangling defaults: convalidated, and "orphan scan … plans_orphan_fk: 3".
+  - 13 `is_member` returns true (structurally perfect): 14 functional lines ("UB reads ZERO rows of A" on 13 tables, and
+    UB's comment INSERT into A).
+  - 14 revoke the decisions UPDATE column grant: "UA writes A's data".
+  - 15 `grant insert on usage_monthly to authenticated`: "server-written — authenticated holds no write privilege".
+  - 16 drop `scores_decision_fkey`: "UB's child row (workspace B) pointing at A's parent is refused" (affected 1).
+  - 17 `create view themis.v_decisions` (owner rights): the view line.
+  - 18 `create table public.x` via EXECUTE: caught by the static guard. 18b `format(...)` evasion creating
+    public.themis_fn(): "zero objects … changed — changed: functions".
+  - 19 a trigger on auth.users via EXECUTE with string concatenation (the static guard does NOT catch it): the diff line
+    (triggers), "no trigger on auth.users", and the fixture seed.
+  - 21 `grant select on schema_migrations to authenticated`: the P1.2 line and the service-only line.
+  - 22 an update policy `using (true)`: helper, viewer-cannot-write. 24 a delete policy `using (true)`: the same.
+  - 23 a select policy + grant to anon: TO-authenticated, helper, anon-privileges, "anon reads nothing in
+    themis.decisions — 3 rows".
+  - 25 audit_log readable by any member: "viewer reads none of A's rows (role-gated) — 2/2".
+  - 26 the archive without the P1.7 files: "every leak-matrix entry names an existing themis table" (5 stale), then the
+    fixture.
+  - 27 select+update+delete `using (true)` on risks: UB reads, UB UPDATE and UB DELETE lines, and the viewer line.
+  - 28 options_select locked to `false`: "UB reads all of B's own rows", "UA reads all", "viewer reads all", "UA writes".
+  - `git diff supabase/` is empty.
+- FINDINGS for the lead (product code NOT changed):
+  - **BUG (latent): the bootstrap's `alter default privileges in schema themis revoke execute on functions from public`
+    is a no-op.** Postgres cannot revoke a GLOBAL default (PUBLIC EXECUTE) per schema. Verified in PGlite: no
+    `pg_default_acl` row is created, and a new `themis.probe()` has proacl NULL and anon EXECUTE = true. Every existing
+    function is safe only because its migration revokes explicitly. The new gate line "PUBLIC has EXECUTE on no themis
+    function" now catches any function that forgets to. The fix needs a builder decision: the global form without
+    `in schema` would also change Hephaestus's future functions in the shared project, so the likely fix is to correct
+    the bootstrap comment and BRAIN, and keep the explicit per-function revokes.
+  - **Static guard gap:** DDL assembled from concatenated strings inside `do $$ … execute … $$` (mutations 18b and 19)
+    passes `db:check`. The gate's public/auth diff and auth.users trigger checks catch it after apply.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate`, all exit 0. 432 tests;
+  the guard passes 6 files; the gate reports 290 PASS. No live Supabase; not pushed.
+- Next: builder decides the default-privileges finding, then P1.9 (`db:gate:prove-red`). Mutation 13's lines and the FAIL
+  names above are what P1.9 can grep for. Sabotage (f), dropping the scores composite FK, is caught by the scores
+  cross-child line.
