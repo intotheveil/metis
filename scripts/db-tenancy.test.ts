@@ -627,7 +627,9 @@ describe('RLS, policies and grants', () => {
     expect(r.rows.length).toBeGreaterThan(0)
     expect(r.rows.filter((x) => /memberships/.test(x.expr))).toEqual([])
     // Every workspace-scoped policy asks through a helper (not `true`, not an inline subquery).
-    for (const x of r.rows.filter((x) => !x.name.startsWith('profiles.')))
+    // profiles is user-scoped, and plans (P1.7) is non-tenant reference data readable by all.
+    const NOT_WORKSPACE_SCOPED = ['profiles.', 'plans.']
+    for (const x of r.rows.filter((x) => !NOT_WORKSPACE_SCOPED.some((p) => x.name.startsWith(p))))
       expect(x.expr, x.name).toMatch(/themis\.(is_member|has_role)\(/)
   })
 

@@ -183,3 +183,30 @@ decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_
 - **`position smallint` on swot_items and risks**, for the P1.5 reason: rows created in one statement (the P4.2
   `new_revision` copy, a P4.6 batch) share `created_at`.
 - **Quadrant is stored as `s|w|o|t`**, exactly as the plan writes it.
+
+## 2026-09-28 — P1.7 AI, billing, audit and plans choices
+
+- **The plans seed is the spec §4 PROPOSAL, marked UNCONFIRMED in the catalogue** (`comment on table themis.plans`),
+  not with an extra column. The PLAN lists the columns, and a `confirmed` flag would be read by nothing. P4.9 updates
+  the rows in a NEW migration after CHECKPOINT P4-PRICING; the seed is `on conflict do nothing`, so re-applying
+  this file never overwrites a confirmed value.
+- **The € cost ceilings are placeholders, not spec values.** Spec §4 requires a per-workspace monthly ceiling but gives
+  no number. Seeded Free €1, Pro €10, Team €60. A flat per-workspace ceiling does not scale with Team seats (500 runs
+  per seat, pooled); P3.12 measures the real per-run cost and P4-PRICING decides whether Team needs a per-seat ceiling.
+- **Exactly one quota basis per plan** (CHECK): Free and Pro have `ai_runs_month`, Team has `ai_runs_per_seat` (P3.2
+  multiplies by seats). No price column: Stripe is the price source of truth (P4.10 lookup keys).
+- **`ai_runs.kind` admits `swot_draft` now.** P4.6 adds that kind without a migration in its file scope.
+- **`ai_runs.status` is `reserved|succeeded|failed`, default `reserved`**, so P3.2 may implement the reservation as
+  an ai_runs row or as a usage_monthly increment; P3.8 needs `failed`.
+- **ai_runs, subscriptions, usage_monthly: SELECT-only for members, no client write at all** (no policy, no grant).
+  Consequence for P3.9: "Accept ... appends to `ai_runs.accepted`" cannot be a client UPDATE. P3.9 needs an editor+
+  SECURITY DEFINER RPC (or the Edge Function) that appends only to `accepted`. Recorded so P3.9 does not open a grant.
+- **audit_log is append-only for every role, by trigger as well as by grant.** A BEFORE UPDATE trigger raises
+  `audit_log_append_only` even for the owner; service_role holds only SELECT + INSERT. DELETE is not blocked by the
+  trigger because rows must still leave with their workspace (on delete cascade; account deletion, spec §7.6), and no
+  API role holds DELETE. audit_log has no updated_at: it never updates.
+- **`audit_log.entity_id` is uuid**, since every Themis entity key is a uuid (a membership is logged by its user_id).
+- **subscriptions keep `id` as the pk with `workspace_id unique`**, and `plan` references `plans(key)`, so an unknown
+  plan cannot be mirrored. Stripe ids are format-checked (`cus_`, `sub_`), and `status` is Stripe's own enum verbatim.
+- **service_role gets SELECT only on plans.** Plan values change by migration, never at runtime.
+- **The recursion-rule test now skips `plans.`** as it already skipped `profiles.`: plans_select is `true` by design.

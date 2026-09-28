@@ -342,3 +342,55 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
   No live Supabase; not pushed.
 - Bugs found: none. The migration behaves as DECISIONS.md "P1.6 analysis and collaboration choices" describes.
 - Next: P1.7 (AI, billing, audit, plans and seed).
+
+## 2026-09-28 — P1.7 AI, billing, audit, plans and seed migration
+
+- Did: migration added, `supabase/migrations/20260928235000_themis_ai_billing_audit.sql`. It creates:
+  - `themis.plans` (key pk `free|pro|team`, active_decisions null = unlimited, ai_runs_month, ai_runs_per_seat,
+    ai_cost_ceiling_eur numeric(10,4), members_max null = unlimited, pdf_footer, pdf_logo, min_seats, created_at,
+    updated_at). CHECK: exactly one of ai_runs_month / ai_runs_per_seat is set. Seeded `on conflict (key) do nothing`
+    with the spec §4 PROPOSAL: free (3 decisions, 10 runs, 1 member, footer), pro (unlimited, 200 runs, 1 member,
+    clean), team (unlimited, 500 runs per seat, unlimited members, logo, min 3 seats). Ceilings €1 / €10 / €60 are
+    builder PLACEHOLDERS (not in the spec). `comment on table themis.plans` marks the seed UNCONFIRMED until
+    CHECKPOINT P4-PRICING; P4.9 changes them in a new migration.
+  - `themis.ai_runs` (workspace_id, decision_id, kind `challenge|missing_criteria|stress_test|explain|swot_draft`,
+    model, status `reserved|succeeded|failed`, input_snapshot jsonb object, output jsonb, tokens_in/out ≥ 0,
+    cost_eur numeric(10,4) ≥ 0, accepted jsonb array default `[]`, created_by, created_at, updated_at). Composite FK
+    `(decision_id, workspace_id)` → decisions, on delete cascade.
+  - `themis.subscriptions` (workspace_id unique → workspaces cascade, stripe_customer_id `cus_…` unique,
+    stripe_subscription_id `sub_…` unique, plan → plans(key) default free, seats ≥ 1, status = Stripe's 8 statuses,
+    period_end).
+  - `themis.usage_monthly` (pk (workspace_id, month), month must be day 1, ai_runs ≥ 0, ai_cost_eur ≥ 0).
+  - `themis.audit_log` (workspace_id → workspaces cascade, actor default auth.uid(), entity, entity_id uuid, action,
+    before/after jsonb, at). `themis.audit_log_append_only()` (search_path pinned, no anon/authenticated EXECUTE)
+    fires BEFORE UPDATE and raises `audit_log_append_only` for every role, the owner included.
+  - updated_at triggers on plans, ai_runs, subscriptions, usage_monthly (audit_log has none: it never updates).
+  - RLS on all five. plans: SELECT to anon, authenticated `using (true)`. ai_runs/subscriptions/usage_monthly: SELECT
+    by `is_member`. audit_log: SELECT by `has_role(owner|admin)`. No INSERT/UPDATE/DELETE policy on any of them.
+  - Grants: anon SELECT on plans only. authenticated SELECT only on all five (no write grant, table or column).
+    service_role: SELECT on plans; full DML on ai_runs/subscriptions/usage_monthly; SELECT + INSERT on audit_log.
+- Existing tests: ONE went RED. `db-tenancy.test.ts` "no policy expression references memberships directly
+  (recursion rule)" swept EVERY themis policy and required a helper call; `plans_select` is `true` by design (non-tenant
+  reference data, PLAN P1.7). Scoped it: the helper requirement now skips `plans.` as it already skipped `profiles.`.
+  No expected value changed; the "no policy mentions memberships" half still covers every table, plans included.
+- Exercised: a scratch PGlite script (not committed, real archive applied twice) ran 79 checks, all PASS:
+  - plans has 3 rows with the proposal values; the table comment says UNCONFIRMED; anon reads 3 plans.
+  - anon: permission denied on ai_runs/subscriptions/usage_monthly/audit_log; cannot write plans.
+  - UA reads exactly its own row of ai_runs/subscriptions/usage_monthly and 0 of B; the viewer reads A's; UB reads 0
+    of A. audit_log: owner reads A's, editor and viewer read none, UB none of A.
+  - Owner AND editor in their own workspace: 15 writes (insert/update/delete on ai_runs, subscriptions, usage_monthly,
+    audit_log; update/insert on plans), each refused with permission denied.
+  - service_role inserts an ai_run, updates usage and a subscription, inserts audit; its UPDATE/DELETE on audit_log
+    and any write to plans are refused; the superuser's UPDATE on audit_log raises `audit_log_append_only`.
+  - ai_run with ws=B pointing at A's decision → composite FK refuses. Bad kind, negative cost, non-array accepted,
+    month not day 1, a second subscription per workspace, unknown plan/status, seats 0, a plan with two quota bases,
+    key `gold` → all refused. updated_at bumps. Workspace delete cascades all four tenant tables.
+  - Catalogue: anon holds exactly SELECT on plans; authenticated holds no table or column write on the five.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exits 0. 327 tests;
+  the guard passes 5 files; the gate applies and re-applies 5 files. Nothing applied live, nothing pushed.
+- Open for later tasks (not solved here, recorded in DECISIONS.md P1.7): P3.9 "appends to `ai_runs.accepted`" from the
+  client needs a server-side path (an editor+ SECURITY DEFINER RPC or the Edge Function), because ai_runs has no
+  client write. The flat per-workspace € ceiling does not scale with Team seats; P3.12/P4-PRICING decides.
+- Next: test-writer for P1.7 (add ai_runs/subscriptions/usage_monthly/audit_log to `TENANT_TABLES`; server-only
+  writes for every role, audit append-only, plans anon read + seed values, exact policy/grant sets scoped to the
+  P1.7 tables), then P1.8.

@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.6 tests) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.7) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -89,6 +89,15 @@ call".
   `(option_id, decision_id)` → options. swot/risks: members read, editor+ write. comments: any member posts
   (viewer too); only the author (still a member) updates/deletes. approvals: admin|owner INSERT only, nobody
   updates/deletes; `author`/`actor`/`created_by` default `auth.uid()` and are client-unwritable.
+  **AI, billing, audit, plans (P1.7):** `20260928235000_themis_ai_billing_audit.sql` adds `plans` (key free|pro|team,
+  non-tenant; SELECT for anon+authenticated, no writer but a migration; seeded `on conflict do nothing` with the §4
+  PROPOSAL, table comment says UNCONFIRMED; exactly one of ai_runs_month / ai_runs_per_seat; € ceilings 1/10/60 are
+  placeholders), `ai_runs` (composite FK to decisions; kind incl. `swot_draft`; status reserved|succeeded|failed;
+  accepted jsonb array), `subscriptions` (workspace_id unique, plan → plans, Stripe status enum), `usage_monthly`
+  (pk workspace_id+month, month = day 1) and `audit_log`. ai_runs/subscriptions/usage_monthly: members SELECT, NO
+  client write (no policy, no grant); only service_role writes. audit_log: admin|owner SELECT; service_role SELECT +
+  INSERT only; a BEFORE UPDATE trigger raises `audit_log_append_only` for every role; rows leave only by workspace
+  cascade.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -160,6 +169,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   for the wrong reason. The P1.5 fixture leaves OA1×CA2 and OA2×CA2 unscored for this. Found in the P1.5 tests.
 - **On this Windows desktop a very long Bash heredoc fails with `ENAMETOOLONG: uv_spawn`** and runs nothing.
   To append a large test block, Write it to a scratch file and `cat >>` it. Found in the P1.6 tests.
+- **A schema-wide policy sweep must know about non-tenant tables.** The recursion-rule test required every `themis`
+  policy to call `is_member`/`has_role`; `plans` (readable by anon, `using (true)`) turned it RED in P1.7. Keep
+  such sweeps' exception list (`profiles.`, `plans.`) in step with every non-workspace-scoped table.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -180,6 +192,19 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.7) — AI, billing, audit, plans and seed migration
+
+- Did: `supabase/migrations/20260928235000_themis_ai_billing_audit.sql` (see §2). A scratch PGlite script ran 79
+  behavioural checks, all PASS (BUILD_LOG.md), and was not committed. One existing test went RED: the recursion-rule
+  sweep required a helper call in EVERY themis policy, and `plans_select` is `true` by design. It now skips `plans.`
+  as it skipped `profiles.`; no expected value changed. lint, typecheck, 327 tests, db:check and db:gate (5 files,
+  applied twice) are green. Nothing applied live, nothing pushed.
+- Decided: seed marked UNCONFIRMED via a table comment; € ceilings are placeholders; audit_log append-only by trigger
+  as well as grant; `swot_draft` kind admitted now (DECISIONS.md P1.7).
+- Left off: test-writer for P1.7 (append the four tenant tables to `TENANT_TABLES`; server-only writes; audit
+  append-only; plans anon read + seed). Then P1.8. Open for P3.9: appending to `ai_runs.accepted` needs a
+  server-side RPC, since clients cannot write ai_runs. Open for P4-PRICING: the flat Team € ceiling vs seats.
 
 ### 2026-09-28 (P1.6 tests) — analysis tables in `scripts/db-tenancy.test.ts`
 
@@ -340,6 +365,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** tenancy writes (memberships, invites, new workspaces) are RPC-only; RLS reads membership only via SECURITY DEFINER helpers (DECISIONS.md P1.4).
 - **2026-09-28:** decision lifecycle columns (status, frozen, approved_*, lineage/revision) are not client-writable; only the P4.2 RPCs change them. A frozen decision cannot be updated or deleted (DECISIONS.md P1.5).
 - **2026-09-28:** approvals are append-only (admin|owner INSERT, no UPDATE/DELETE); only a comment's author edits it; risk exposure is never stored (DECISIONS.md P1.6).
+- **2026-09-28:** billing and AI ledgers (ai_runs, subscriptions, usage_monthly) are client read-only, service_role writes; audit_log is append-only for every role (trigger); plans is public reference data seeded with UNCONFIRMED proposal values (DECISIONS.md P1.7).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
