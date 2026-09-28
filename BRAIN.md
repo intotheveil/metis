@@ -89,9 +89,20 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 6. CHANGELOG (append-only — newest first)
 
-### 2026-09-28 — created greenfield via Zeus NEW PRODUCT
+### 2026-09-28 (later) — renamed Metis → Themis; brand applied; NOT yet deployed
 
-- Did: named Themis (operator-confirmed), created `intotheveil/themis`, scaffolded the house front-end
+- Did: the operator sent Themis brand artwork (a marble statue with the scales, gold on black,
+  "Decision Intelligence Platform · Better analysis. Clearer options. Stronger decisions.") and
+  chose to rename the product. Repo `intotheveil/metis` → `intotheveil/themis` (public), local dir,
+  Pages base and zeus `fleet.repos` all moved. The UI was restyled to match: `src/Mark.tsx`, a
+  Cinzel gold wordmark and warm-black tokens. The brief's modules (SWOT, scenarios, risk, …) are
+  listed as ROADMAP, not features. A phone-overflow bug was fixed. 16 tests; lint, typecheck and
+  build green.
+- Left off: **§4 B1**. Local commits are unpushed until the `workflow` scope is granted.
+
+### 2026-09-28 — created greenfield via Zeus NEW PRODUCT (as Metis)
+
+- Did: named Metis (operator-confirmed; renamed to Themis later the same day, see above), created `intotheveil/themis`, scaffolded the house front-end
   stack, built a dark "serious, modern" UI with a working weighted decision matrix (operator asked
   mid-build), CI + GitHub Pages deploy, crew kit from zeus `.zeus/kit/` (7 hooks, 7 agents,
   composed constitution, `settings.template.json`), this brain.
