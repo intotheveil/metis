@@ -91,6 +91,34 @@ const archiveCopy = () => {
   cpSync(ARCHIVE, d, { recursive: true })
   return d
 }
+/**
+ * The six P1 files, frozen. The real archive grows with every migration task, so a test whose point
+ * is an exact scenario (a partial ledger, a stop at the 3rd file) runs on a copy of THESE files only,
+ * and its exact numbers stay meaningful. Tests about the real archive derive their counts from
+ * loadMigrations(ARCHIVE) / plan() instead (BRAIN §5: never hard-code the real archive's size).
+ */
+const FROZEN_P1 = [
+  '20260928200000_themis_schema.sql',
+  '20260928210000_themis_tenancy.sql',
+  '20260928220000_themis_decisions.sql',
+  '20260928230000_themis_analysis.sql',
+  '20260928235000_themis_ai_billing_audit.sql',
+  '20260928235500_themis_audit_actor_erasure.sql',
+]
+const frozenP1Archive = () => {
+  const d = tempDir()
+  for (const f of FROZEN_P1) cpSync(path.join(ARCHIVE, f), path.join(d, f))
+  expect(loadMigrations(d).map((m) => m.file)).toEqual(FROZEN_P1)
+  return d
+}
+/** The real archive's size, as the applier must report it. */
+const realArchive = () => {
+  const local = loadMigrations(ARCHIVE)
+  const units = plan(local, []).units
+  // Every pair merges two files into one transaction; nothing else is merged.
+  expect(units).toHaveLength(local.length - PAIRED.length)
+  return { local, units, files: local.length, txs: units.length }
+}
 /** A fixture archive: name → sql. */
 const fixture = (files: Record<string, string>) => {
   const d = tempDir()
@@ -173,18 +201,21 @@ describe('credentials', () => {
 
 describe('dry-run (the default)', () => {
   it('prints the plan, rolls back every batch, and commits nothing', async () => {
+    const { files, txs } = realArchive()
     const r = await runIt({})
     expect(r.code).toBe(0)
     expect(r.out[0]).toMatch(/DRY-RUN .*nothing is committed.*project abcdefghijklmnopqrst/)
-    expect(r.out).toContain('PASS  migration guard: 6 migration(s) stay inside schema themis')
+    expect(r.out).toContain(
+      `PASS  migration guard: ${files} migration(s) stay inside schema themis`,
+    )
     expect(r.out).toContain(`ledger: ${LEDGER} does not exist — nothing applied yet`)
-    expect(r.out).toContain('PLAN  6 pending file(s) in 5 transaction(s):')
+    expect(r.out).toContain(`PLAN  ${files} pending file(s) in ${txs} transaction(s):`)
     expect(r.all).toMatch(
       /20260928235000_themis_ai_billing_audit\.sql .*\[paired: one transaction\]/,
     )
-    expect(r.out.at(-1)).toMatch(/^DRY-RUN PASSED — 6 pending file\(s\)/)
+    expect(r.out.at(-1)).toMatch(new RegExp(`^DRY-RUN PASSED — ${files} pending file\\(s\\)`))
     const batches = r.api.batches()
-    expect(batches).toHaveLength(5)
+    expect(batches).toHaveLength(txs)
     for (const b of batches) {
       expect(b.query.trimEnd().endsWith('rollback;')).toBe(true)
       expect(b.query).not.toMatch(/\bcommit;/)
@@ -193,15 +224,22 @@ describe('dry-run (the default)', () => {
   })
 
   it('tries each unit on top of the pending units before it (cumulative, rolled back)', async () => {
+    const { units } = realArchive()
     const r = await runIt({})
     const files = loadMigrations(ARCHIVE).map((m) => m.file)
     const batches = r.api.batches()
+    expect(batches).toHaveLength(units.length)
     // batch k holds units 1..k: the tenancy file is tried with the bootstrap's schema present.
     expect(batches[1].query.indexOf(`-- >>> ${files[0]}`)).toBeGreaterThan(-1)
     expect(batches[1].query.indexOf(`-- >>> ${files[1]}`)).toBeGreaterThan(
       batches[1].query.indexOf(`-- >>> ${files[0]}`),
     )
-    for (const f of files) expect(batches[4].query).toContain(`-- >>> ${f}`)
+    // ...and exactly those: batch k carries units 1..k, in order, and nothing later.
+    batches.forEach((b, k) => {
+      const sent = [...b.query.matchAll(/^-- >>> (\S+)$/gm)].map((m) => m[1])
+      expect(sent).toEqual(units.slice(0, k + 1).flatMap((u) => u.map((m) => m.file)))
+    })
+    for (const f of files) expect(batches.at(-1)?.query).toContain(`-- >>> ${f}`)
   })
 
   it('reports the failing unit, exits 1, and never commits', async () => {
@@ -244,18 +282,21 @@ describe('the transaction wrapping', () => {
   })
 
   it('--apply sends one committed batch per unit, each carrying its own ledger rows', async () => {
+    const { files, txs } = realArchive()
     const api = fakeApi()
     const r = await runIt({ argv: ['--apply'], api })
     expect(r.code).toBe(0)
     expect(r.out[0]).toMatch(/APPLY \(each batch COMMITs\)/)
     const batches = api.batches()
-    expect(batches).toHaveLength(5)
+    expect(batches).toHaveLength(txs)
     for (const b of batches) expect(b.query.trimEnd().endsWith('commit;')).toBe(true)
     const local = loadMigrations(ARCHIVE)
     expect(api.state.ledger).toEqual(
       local.map((x) => ({ version: x.version, name: x.name, checksum: x.checksum })),
     )
-    expect(r.out.at(-1)).toBe(`APPLY PASSED — 6 file(s) committed and recorded in ${LEDGER}.`)
+    expect(r.out.at(-1)).toBe(
+      `APPLY PASSED — ${files} file(s) committed and recorded in ${LEDGER}.`,
+    )
   })
 
   it('prints the plan before sending any migration batch', async () => {
@@ -278,7 +319,7 @@ describe('the transaction wrapping', () => {
       error: () => {},
     })
     expect(order[0]).toBe('plan')
-    expect(order.filter((x) => x === 'batch')).toHaveLength(5)
+    expect(order.filter((x) => x === 'batch')).toHaveLength(realArchive().txs)
   })
 
   it('an already-applied archive is a no-op', async () => {
@@ -297,14 +338,15 @@ describe('the transaction wrapping', () => {
 
 describe('pending detection', () => {
   it('only the versions missing from the ledger are pending', async () => {
-    const local = loadMigrations(ARCHIVE)
+    const dir = frozenP1Archive()
+    const local = loadMigrations(dir)
     const applied = local.slice(0, 3).map((x) => ({
       version: x.version,
       name: x.name,
       checksum: x.checksum,
     }))
     const api = fakeApi({ ledger: applied })
-    const r = await runIt({ argv: ['--apply'], api })
+    const r = await runIt({ argv: ['--apply'], api, dir })
     expect(r.code).toBe(0)
     expect(r.out).toContain('ledger: 3 version(s) applied')
     expect(r.out).toContain('PLAN  3 pending file(s) in 2 transaction(s):')
@@ -473,7 +515,7 @@ describe(`the paired rule (${PAIR_A} + ${PAIR_B})`, () => {
 describe('--apply stops at the first failure', () => {
   it('commits the units before, attempts none after, exits 1', async () => {
     const api = fakeApi({ failWhen: /-- >>> 20260928220000/ })
-    const r = await runIt({ argv: ['--apply'], api })
+    const r = await runIt({ argv: ['--apply'], api, dir: frozenP1Archive() })
     expect(r.code).toBe(1)
     expect(api.batches()).toHaveLength(3)
     expect(api.state.ledger?.map((x) => x.version)).toEqual(['20260928200000', '20260928210000'])
