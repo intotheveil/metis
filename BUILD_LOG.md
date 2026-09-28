@@ -433,7 +433,7 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
   an UPDATE of audit_log, and the BEFORE UPDATE `audit_log_no_update` trigger refuses it. Deleting ANY auth user who
   is an actor in any audit row fails with `audit_log_append_only`. That blocks account deletion (spec §7.6) and a user
   delete on Hephaestus's side of the shared auth.users. Recorded as `it.fails('BUG: deleting an auth user who is an
-  audit actor keeps the audit row, actor nulled')`: the assertion is intact, and the test goes RED as soon as the
+audit actor keeps the audit row, actor nulled')`: the assertion is intact, and the test goes RED as soon as the
   migration is fixed (then flip it to `it`). Mutation m2 (trigger removed) made this test pass, which shows the trigger
   is the cause. Suggested fix (builder, NEW migration): let the trigger allow an UPDATE that only nulls `actor`, or
   make the actor FK `on delete no action` and handle deletion another way.
@@ -450,3 +450,30 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
 - Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exit 0; 426 passed +
   1 expected fail (the bug). No live Supabase; not pushed.
 - Next: builder fixes the audit actor bug in a NEW migration and flips the it.fails; then P1.8.
+
+## 2026-09-28 — FIX: audit_log actor erasure (bug found by the P1.7 tests)
+
+- Did: NEW migration `supabase/migrations/20260928235500_themis_audit_actor_erasure.sql`. It does
+  `create or replace function themis.audit_log_append_only()` (same name, so the P1.7 trigger `audit_log_no_update` now
+  uses the new body). It returns NEW only when `old.actor is not null and new.actor is null and (to_jsonb(new) - 'actor') =
+(to_jsonb(old) - 'actor')`. Every other UPDATE still raises `audit_log_append_only` (42501) for every role.
+  `search_path = ''` is kept, and EXECUTE is revoked from public/anon/authenticated again. The file has no grant and no
+  other DDL, stays in schema themis only, and is idempotent. The P1.7 file is untouched.
+- Tests (`scripts/db-tenancy.test.ts`, 371 → 376 in the file, 432 total): the `it.fails` BUG test is now `it`, with its
+  assertion unchanged. New describe "actor-erasure fix":
+  - (a) superuser `actor = null` + action/after/at/workspace_id changed: each raises audit_log_append_only, and the table
+    is unchanged. service_role does the same and is refused with permission denied (no UPDATE grant).
+  - (b) superuser re-points actor to another user and is refused. Filling a null actor is refused. A no-op
+    `actor = null` on a null-actor row is refused.
+  - (c) a throwaway role `themis_test_auth_admin` (DELETE+SELECT on auth.users, no USAGE on themis, no UPDATE on
+    audit_log; anon/authenticated/service_role also hold no UPDATE) deletes the viewer. The delete succeeds, A1 survives
+    with actor NULL, every other column of A1 is byte-identical, and the other rows are unchanged. **This proves the FK
+    action needs no grant.** Also covered: deleting ownerB nulls only B1's actor, and A's audit rows are unchanged.
+  - The trigger-set and function-config assertions needed no change (same function name, same config).
+- Mutation evidence (archive COPIES in the scratchpad via DB_GATE_MIGRATIONS):
+  - no fix file: 3 RED (the flipped test, the auth-admin delete, the ownerB delete).
+  - fix without the column comparison: 1 RED ((a)).
+  - fix without the `old.actor not null / new.actor null` guard: 1 RED ((b)).
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exit 0. 432 passed, 0
+  expected-fail. The guard passes 6 files, and the gate applies and re-applies 6 files. No live Supabase; not pushed.
+- Next: P1.8.

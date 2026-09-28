@@ -10,6 +10,8 @@
 // P1.7 — AI, billing, audit and plans: ai_runs, subscriptions, usage_monthly, audit_log (isolation
 //        matrix, server-side-only writes, append-only audit, service_role scope) and plans (anon
 //        read, proposal seed, idempotent re-apply, one quota basis).
+// Audit actor erasure (20260928235500): the actor FK's ON DELETE SET NULL passes the append-only
+//        trigger; every other UPDATE of audit_log is still refused.
 // The P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 TABLES, so
 // a later migration's tables extend the schema without rewriting P1.4's contract.
 //
@@ -3738,19 +3740,124 @@ describe('AI/billing/audit (P1.7): updated_at and cascades', () => {
       expect(await s.count('ai_runs', `id = '${AR.A}' and created_by is null`)).toBe(1)
     }))
 
-  // BUG (P1.7, reported to the lead): audit_log.actor is `on delete set null`, but the FK's SET NULL
-  // is an UPDATE of audit_log, which the BEFORE UPDATE append-only trigger refuses. So deleting ANY
-  // auth user who ever acted in a Themis audit row fails with `audit_log_append_only` — account
-  // deletion (spec §7.6) is blocked, and so is a user delete on Hephaestus's side of the shared
-  // auth.users. `it.fails` keeps the assertion intact and turns RED the moment the migration is
-  // fixed: then change it to `it`.
-  it.fails(
-    'BUG: deleting an auth user who is an audit actor keeps the audit row, actor nulled',
-    () =>
-      actAs(SUPERUSER, async (s) => {
-        const o = await s.attempt(`delete from auth.users where id = $1`, [U.viewerA])
-        expect(o, JSON.stringify(o)).toEqual({ ok: true, affected: 1 })
-        expect(await s.count('audit_log', `id = '${AU.A1}' and actor is null`)).toBe(1)
-      }),
-  )
+  // Fixed in 20260928235500_themis_audit_actor_erasure.sql: audit_log.actor is `on delete set null`,
+  // and the FK's SET NULL is an UPDATE of audit_log. The append-only trigger now lets exactly that
+  // UPDATE through (actor non-null -> NULL, every other column unchanged). Before the fix, deleting
+  // ANY auth user who ever acted in a Themis audit row failed with `audit_log_append_only`, which
+  // blocked account deletion (spec §7.6) and user deletion on Hephaestus's side of the shared
+  // auth.users.
+  it('deleting an auth user who is an audit actor keeps the audit row, actor nulled', () =>
+    actAs(SUPERUSER, async (s) => {
+      const o = await s.attempt(`delete from auth.users where id = $1`, [U.viewerA])
+      expect(o, JSON.stringify(o)).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('audit_log', `id = '${AU.A1}' and actor is null`)).toBe(1)
+    }))
+})
+
+describe('AI/billing/audit (actor-erasure fix): the audit actor may be erased, nothing else changes', () => {
+  /** audit_log row `id` as text, every column except actor (for "nothing else changed"). */
+  const rest = (s: Session, id: string) =>
+    s.sudo(async () => {
+      const [r] = await s.rows<{ j: string }>(
+        `select (to_jsonb(a) - 'actor')::text as j from themis.audit_log a where id = $1`,
+        [id],
+      )
+      return r.j
+    })
+
+  it('an UPDATE that nulls actor AND changes another column is refused, even for the superuser', () =>
+    actAs(SUPERUSER, async (s) => {
+      const before = await snapshot(s, 'audit_log', 'true')
+      for (const set of [
+        `actor = null, action = 'rewritten'`,
+        `actor = null, after = '{"body":"forged"}'`,
+        `actor = null, at = now() - interval '1 day'`,
+        `actor = null, workspace_id = '${WB}'`,
+      ]) {
+        const o = await s.attempt(`update themis.audit_log set ${set} where id = $1`, [AU.A1])
+        expect(o.ok, set).toBe(false)
+        expect(!o.ok && o.error, set).toMatch(/audit_log_append_only/)
+      }
+      expect(await snapshot(s, 'audit_log', 'true')).toEqual(before)
+    }))
+
+  it('the same UPDATE is refused for service_role (no UPDATE grant), with the rows unchanged', () =>
+    actAs(SERVICE, async (s) => {
+      const before = await snapshot(s, 'audit_log', 'true')
+      const o = await s.attempt(
+        `update themis.audit_log set actor = null, action = 'rewritten' where id = $1`,
+        [AU.A1],
+      )
+      expect(refused(o), JSON.stringify(o)).toBe(true)
+      expect(await snapshot(s, 'audit_log', 'true')).toEqual(before)
+    }))
+
+  it('a direct UPDATE re-pointing actor to another (non-null) user is refused', () =>
+    actAs(SUPERUSER, async (s) => {
+      const before = await snapshot(s, 'audit_log', 'true')
+      const o = await s.attempt(`update themis.audit_log set actor = $2 where id = $1`, [
+        AU.A1,
+        U.ownerA,
+      ])
+      expect(o.ok).toBe(false)
+      expect(!o.ok && o.error).toMatch(/audit_log_append_only/)
+      // Nor may an actor be written into a row that has none.
+      const fill = await s.attempt(`update themis.audit_log set actor = $2 where id = $1`, [
+        AU.A2,
+        U.ownerA,
+      ])
+      expect(!fill.ok && fill.error).toMatch(/audit_log_append_only/)
+      // A no-op UPDATE of a row with no actor is still an UPDATE: refused.
+      const noop = await s.attempt(`update themis.audit_log set actor = null where id = $1`, [
+        AU.A2,
+      ])
+      expect(!noop.ok && noop.error).toMatch(/audit_log_append_only/)
+      expect(await snapshot(s, 'audit_log', 'true')).toEqual(before)
+    }))
+
+  it('an auth admin with DELETE on auth.users and NO privilege on audit_log deletes an actor: the row survives, actor NULL, all else unchanged', () =>
+    actAs(SUPERUSER, async (s) => {
+      // Stand-in for Supabase's auth admin (and for Hephaestus deleting a user): it may delete
+      // auth.users and holds nothing on themis. The FK action runs as audit_log's owner, so no
+      // role needs UPDATE on audit_log for the SET NULL to happen.
+      await s.rows(`create role themis_test_auth_admin nologin`)
+      await s.rows(`grant usage on schema auth to themis_test_auth_admin`)
+      await s.rows(`grant select, delete on auth.users to themis_test_auth_admin`)
+      const [p] = await s.rows<{ upd: boolean; usage: boolean }>(
+        `select has_table_privilege('themis_test_auth_admin', 'themis.audit_log', 'UPDATE') as upd,
+                has_schema_privilege('themis_test_auth_admin', 'themis', 'USAGE') as usage`,
+      )
+      expect(p).toEqual({ upd: false, usage: false })
+      for (const r of ['anon', 'authenticated', 'service_role'])
+        expect(
+          (
+            await s.rows<{ u: boolean }>(
+              `select has_table_privilege($1, 'themis.audit_log', 'UPDATE') as u`,
+              [r],
+            )
+          )[0].u,
+          r,
+        ).toBe(false)
+
+      const restA1 = await rest(s, AU.A1)
+      const others = await snapshot(s, 'audit_log', `id <> '${AU.A1}'`)
+      await s.rows(`set local role themis_test_auth_admin`)
+      const o = await s.attempt(`delete from auth.users where id = $1`, [U.viewerA])
+      await s.rows(`reset role`)
+      expect(o, JSON.stringify(o)).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('audit_log', `id = '${AU.A1}' and actor is null`)).toBe(1)
+      expect(await rest(s, AU.A1)).toBe(restA1)
+      expect(await snapshot(s, 'audit_log', `id <> '${AU.A1}'`)).toEqual(others)
+    }))
+
+  it("deleting B's owner (an actor) nulls only B1's actor; A's audit rows are untouched", () =>
+    actAs(SUPERUSER, async (s) => {
+      const a = await snapshot(s, 'audit_log', `workspace_id = '${WA}'`)
+      const restB1 = await rest(s, AU.B1)
+      const o = await s.attempt(`delete from auth.users where id = $1`, [U.ownerB])
+      expect(o, JSON.stringify(o)).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('audit_log', `id = '${AU.B1}' and actor is null`)).toBe(1)
+      expect(await rest(s, AU.B1)).toBe(restB1)
+      expect(await snapshot(s, 'audit_log', `workspace_id = '${WA}'`)).toEqual(a)
+    }))
 })

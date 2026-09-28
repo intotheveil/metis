@@ -210,3 +210,17 @@ decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_
   plan cannot be mirrored. Stripe ids are format-checked (`cus_`, `sub_`), and `status` is Stripe's own enum verbatim.
 - **service_role gets SELECT only on plans.** Plan values change by migration, never at runtime.
 - **The recursion-rule test now skips `plans.`** as it already skipped `profiles.`: plans_select is `true` by design.
+
+## 2026-09-28 — audit_log actor erasure (fix of the P1.7 append-only trigger)
+
+- **The append-only trigger lets exactly one UPDATE through: `actor` non-null → NULL with every other column
+  unchanged** (`(to_jsonb(new) - 'actor') = (to_jsonb(old) - 'actor')`). That is the SET NULL the `actor → auth.users`
+  FK performs when a user is deleted. The P1.7 trigger refused it, so deleting any audit actor failed, including user
+  deletion on Hephaestus's side of the shared auth.users. Fixed in the NEW migration
+  `20260928235500_themis_audit_actor_erasure.sql`, which replaces the function in place (same name, same trigger), so the
+  pushed P1.7 file is untouched. We kept `on delete set null` and did not switch to `no action`. The alternative would
+  block every user delete on the shared project until Themis cleans up first, and an audit row that outlives its actor
+  as "someone" is what erasure (spec §7.6) wants. **No privilege was added:** the FK action runs as audit_log's owner, so
+  no role needs UPDATE (proven in PGlite with a role that holds only DELETE on auth.users). What remains possible is a
+  superuser/owner directly nulling an actor with nothing else changed. That is erasure, not tampering, and no API role
+  can do it (no UPDATE grant).

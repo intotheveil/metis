@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.7) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (audit actor-erasure fix) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -97,7 +97,10 @@ call".
   (pk workspace_id+month, month = day 1) and `audit_log`. ai_runs/subscriptions/usage_monthly: members SELECT, NO
   client write (no policy, no grant); only service_role writes. audit_log: admin|owner SELECT; service_role SELECT +
   INSERT only; a BEFORE UPDATE trigger raises `audit_log_append_only` for every role; rows leave only by workspace
-  cascade.
+  cascade. **Actor erasure (`20260928235500_themis_audit_actor_erasure.sql`):** the trigger function lets exactly ONE
+  update through: `actor` non-null → NULL with every other column unchanged. That is the `actor → auth.users on delete
+  set null` FK action, so deleting a user (Themis or Hephaestus) works. No role holds UPDATE on audit_log; the FK action
+  runs as the table owner and needs no grant.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -123,7 +126,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   170 tests in that file, suite total 228).
   P1.6 done (builder): the analysis migration (swot_items, risks, comments, approvals), local only;
   P1.6 tests done: `db-tenancy.test.ts` covers the analysis tables too (271 tests in that file, suite total 327).
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.7 (AI, billing, audit, plans).
+  P1.7 done (builder + tests; 432 tests in total): AI, billing, audit and plans, local only. The P1.7 tests found that
+  deleting an audit actor failed. That is fixed by the new migration `20260928235500_themis_audit_actor_erasure.sql`
+  (local only, not pushed). `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.8.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -172,6 +177,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **A schema-wide policy sweep must know about non-tenant tables.** The recursion-rule test required every `themis`
   policy to call `is_member`/`has_role`; `plans` (readable by anon, `using (true)`) turned it RED in P1.7. Keep
   such sweeps' exception list (`profiles.`, `plans.`) in step with every non-workspace-scoped table.
+- **An FK `ON DELETE SET NULL`/`CASCADE` INTO an append-only (UPDATE/DELETE-guarded) table is itself an UPDATE/DELETE
+  of that table.** Guard triggers fire on it. P1.7's audit_log trigger refused the `actor` SET NULL, which would have
+  broken deletion of any audit actor. Because **auth.users is shared with Hephaestus**, that would also have broken user
+  deletion on Hephaestus's side, in the live project. Before guarding a table, list every FK INTO it
+  (`pg_constraint where conrelid = <table>` with confdeltype `n`/`c`/`d`) and let exactly that action through, as
+  `20260928235500` does. Grants are not the issue: RI actions run as the table owner. Found in the P1.7 tests.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -192,6 +203,21 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (fix) — audit_log actor erasure (bug found by the P1.7 tests)
+
+- Did: NEW migration `supabase/migrations/20260928235500_themis_audit_actor_erasure.sql`. It replaces
+  `themis.audit_log_append_only()` in place, so the only UPDATE it allows is `actor` non-null → NULL with every other column
+  unchanged. The pushed P1.7 file is untouched, no grant was added, search_path stays pinned, and anon/authenticated get
+  no EXECUTE. In `scripts/db-tenancy.test.ts`, the `it.fails` BUG test is now `it`, and 5 new tests cover: nulling actor
+  plus changing another column is refused for superuser and service_role; re-pointing or filling actor is refused; an
+  auth-admin-like role with only DELETE on auth.users deletes an actor, and the row survives, nulled and otherwise
+  identical (so the FK action needs no grant); deleting ownerB touches only B1. Three archive-copy mutations went RED
+  (BUILD_LOG.md). lint, typecheck, 432 tests (0 expected-fail), db:check and db:gate (6 files, twice) are green. Nothing
+  applied live, not pushed.
+- Decided: keep `on delete set null` and let exactly that update through (DECISIONS.md "audit_log actor erasure").
+- Resolved: the P1.7 audit-actor bug, which was a blocker for going live.
+- Left off: P1.8. When applying live (P1.11), BOTH 20260928235000 and 20260928235500 must go together, never the first alone.
 
 ### 2026-09-28 (P1.7) — AI, billing, audit, plans and seed migration
 
@@ -366,6 +392,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** decision lifecycle columns (status, frozen, approved_*, lineage/revision) are not client-writable; only the P4.2 RPCs change them. A frozen decision cannot be updated or deleted (DECISIONS.md P1.5).
 - **2026-09-28:** approvals are append-only (admin|owner INSERT, no UPDATE/DELETE); only a comment's author edits it; risk exposure is never stored (DECISIONS.md P1.6).
 - **2026-09-28:** billing and AI ledgers (ai_runs, subscriptions, usage_monthly) are client read-only, service_role writes; audit_log is append-only for every role (trigger); plans is public reference data seeded with UNCONFIRMED proposal values (DECISIONS.md P1.7).
+- **2026-09-28:** audit_log's append-only trigger permits only the actor FK's SET NULL (actor → NULL, all else unchanged); no role gains UPDATE (DECISIONS.md "audit_log actor erasure").
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
