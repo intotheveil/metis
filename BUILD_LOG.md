@@ -58,3 +58,29 @@ themis`. `db:gate` pointed at a red fixture prints "nothing was applied" and exi
   typecheck and 17 tests are green.
 - Next: test-writer writes `scripts/check-migrations.test.ts`. Note: it is outside every tsconfig
   `include`, so vitest runs it and eslint lints it, but `tsc -b` does not typecheck it. Then P1.4.
+
+## 2026-09-28 — P1.3 tests: `scripts/check-migrations.test.ts` (test-writer)
+
+- Added: 39 Vitest tests (node environment), fixture SQL inline as string literals. Each asserts the
+  rule id AND the line number: forbidden-schema (public DDL, auth write, storage policy,
+  supabase_migrations insert, upper-case and quoted identifiers, `execute '...'` string literal,
+  `schema public` grant, `search_path` naming public), comments NOT flagged (line + nested block),
+  `search_path = ''` GREEN, the two allowed auth forms GREEN, other auth refs (`auth.jwt()`, bare
+  `auth.uid`, a read of auth.users) RED, auth-users-trigger, create-extension, alter-system,
+  drop-schema, alter-role + alter user, default-privileges (public RED, no schema RED, `in schema
+themis` with/without `for role` GREEN), target-outside-themis (unqualified create/insert/update
+  and another schema RED; temp/temporary table and themis-qualified GREEN), filename (3 bad names
+  RED at line 0, good name GREEN), stripComments offset/line preservation, formatViolation,
+  checkMigrationsDir/runGuard on missing dir, empty dir (.gitkeep only), a mixed dir, a clean dir,
+  and the real `supabase/migrations` archive (PASS).
+- Mutation-checked (source restored after each, `git diff scripts/check-migrations.mjs` empty):
+  trigger regex `auth` -> `authx` (1 RED); default-privileges always skipped (2 RED); FILENAME_RE
+  `\d{14}` -> `\d{13,14}` (1 RED); `auth.uid` allowed without `()` (1 RED); comment stripping
+  disabled (3 RED).
+- Typecheck coverage: new `tsconfig.scripts.json` (allowJs, strict, node types, include
+  `scripts/**/*.test.ts`) referenced from `tsconfig.json`, so `tsc -b` now checks the test file and
+  the JSDoc-typed `check-migrations.mjs` import. Proven: a probe `scripts/*.test.ts` with a type
+  error made `npm run typecheck` fail (removed).
+- Suite: lint clean, typecheck clean, 56 tests / 3 files green, db:gate GATE PASSED. No live
+  project touched, not pushed.
+- Next: P1.4.

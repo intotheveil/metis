@@ -76,7 +76,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **What's in progress:** P1 (data spine) per `PLAN.md`. P1.1 done: ADR-0002 + constitution
   §2/§8/§11 for the shared database. P1.2 done: `npm run db:gate` + bootstrap migration (local
   only, nothing applied live). P1.3 done: static migration guard `npm run db:check`, run first
-  by `db:gate` (its test file `scripts/check-migrations.test.ts` is test-writer's, pending).
+  by `db:gate` (covered by `scripts/check-migrations.test.ts`, 39 tests, typechecked via `tsconfig.scripts.json`).
   `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.4 (tenancy migration).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
@@ -106,6 +106,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   the test file. Never split the string to dodge the regex. Found in P1.3.
 - **Postgres grants EXECUTE on new functions to PUBLIC.** The bootstrap revokes that by default in
   `themis`, so an RPC for signed-in users needs an explicit `grant execute … to authenticated`.
+- **A `scripts/**/*.test.ts` file is only typechecked because of `tsconfig.scripts.json`** (allowJs,
+  so the JSDoc in `.mjs` scripts types the imports). A test file elsewhere outside `src/` is run by
+  Vitest and linted but NOT typechecked unless a tsconfig include covers it. Found in P1.3.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
   `import.meta.env.BASE_URL`, never a hard-coded path, so a move back under a path stays a one-line change.
@@ -125,6 +128,14 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.3 tests) — `scripts/check-migrations.test.ts`
+
+- Did: 39 Vitest tests, one RED fixture per guard rule plus GREEN allowed forms, asserting rule id
+  and line; real archive PASS. Five mutations of the guard each turned tests RED (BUILD_LOG.md).
+  Added `tsconfig.scripts.json` (referenced from `tsconfig.json`) so `tsc -b` typechecks
+  `scripts/**/*.test.ts`. lint/typecheck/56 tests/db:gate green.
+- Left off: P1.4 (tenancy migration).
 
 ### 2026-09-28 (P1.3) — static migration guard
 
