@@ -112,3 +112,24 @@ workspaces` resolves through the search_path and would land in Hephaestus's `pub
   non-dot file in the migrations dir** must match the name pattern, so a mis-cased `.SQL` cannot be
   silently skipped by the gate's `.sql` filter. Name violations report line 0 (the whole file).
 - **An empty or missing dir is red**, which matches db:gate's "nothing to prove" rule.
+
+## 2026-09-28 — P1.4 tenancy choices
+
+- **Membership, invite and workspace-creation writes are RPC-only.** `memberships` and `invites`
+  have a SELECT policy only, and `workspaces` has no INSERT policy. A direct admin UPDATE on
+  `memberships.role` would bypass P2.6's rules ("an admin cannot promote to owner", "the last owner
+  cannot be removed or demoted"). The first owner membership of a new workspace cannot pass an
+  "is admin" check. P2.5 `bootstrap_me()` and the P2.6 RPCs (SECURITY DEFINER) do these writes.
+- **Table grants match the policies.** authenticated gets SELECT on all four, INSERT
+  (user_id, display_name) and UPDATE (display_name) on profiles, UPDATE (name, logo_data_url) and
+  DELETE on workspaces, and nothing else. Column grants stop an allowed updater from rewriting
+  `created_by` or a key. service_role gets full DML.
+- **Third helper `themis.shares_workspace(other)`** backs the profiles policy "own row or a shared
+  workspace", so that policy never subqueries memberships either.
+- **No citext.** `create extension` is forbidden in the shared project. `invites.email` is text with
+  `check (email = lower(email))`, and callers lower-case it. `token_hash` is a 64-char lower-hex
+  sha256 (`encode(sha256(...), 'hex')` in P2.6).
+- **Logo = png/jpeg/webp data URL only, ≤ 140000 chars** (≈ 100 KB of image once base64-encoded).
+  SVG is refused because it can carry script.
+- **`create or replace trigger`** (PG14+) keeps the triggers idempotent without a DROP.
+- **memberships' unique(workspace_id, user_id) is its primary key.**

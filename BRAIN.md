@@ -60,6 +60,13 @@ call".
   `create-extension`, `alter-system`, `drop-schema`, `alter-role`, and `default-privileges`
   (allowed only `in schema themis`). Comments are blanked and strings are kept. Exports
   `checkMigrationSql(file, sql)`/`checkMigrationsDir(dir)` for tests.
+  **Tenancy (P1.4):** `20260928210000_themis_tenancy.sql` adds `themis.profiles` (pk user_id →
+  auth.users), `workspaces` (logo = png/jpeg/webp data URL ≤ 140000 chars), `memberships` (pk
+  workspace_id+user_id, role owner|admin|editor|viewer), `invites` (lower-case email, unique 64-hex
+  `token_hash`). Membership RLS goes ONLY through the SECURITY DEFINER helpers `themis.is_member(ws)`,
+  `themis.has_role(ws, roles[])` and `themis.shares_workspace(other)` (`search_path=''`, EXECUTE for
+  authenticated only). Memberships and invites are SELECT-only for clients, and workspaces have no
+  INSERT policy. Those writes go through P2.5/P2.6 SECURITY DEFINER RPCs. anon holds nothing.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -77,7 +84,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   §2/§8/§11 for the shared database. P1.2 done: `npm run db:gate` + bootstrap migration (local
   only, nothing applied live). P1.3 done: static migration guard `npm run db:check`, run first
   by `db:gate` (covered by `scripts/check-migrations.test.ts`, 39 tests, typechecked via `tsconfig.scripts.json`).
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.4 (tenancy migration).
+  P1.4 done: tenancy migration (profiles, workspaces, memberships, invites + RLS helpers), local only.
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: test-writer for P1.4, then P1.5 (decision core).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -128,6 +136,17 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.4) — tenancy migration
+
+- Did: `supabase/migrations/20260928210000_themis_tenancy.sql` (see §2). lint, typecheck, 56 tests,
+  db:check and db:gate all green, with both files applied and re-applied. A scratch PGlite script
+  ran 84 checks, all PASS: A/B cross-tenant reads return 0, cross-tenant writes have no effect,
+  viewer and editor are role-gated, anon holds nothing, there is no recursion, and deletes cascade.
+  It is not committed, because P1.8 owns the leak suite. Nothing was applied live.
+- Decided: membership, invite and workspace-creation writes are RPC-only. Grants are
+  column-limited to match the policies. There is no citext (DECISIONS.md P1.4).
+- Left off: test-writer for P1.4, which should add tenancy contract checks to `db-gate.mjs`. Then P1.5.
 
 ### 2026-09-28 (P1.3 tests) — `scripts/check-migrations.test.ts`
 
@@ -214,6 +233,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** GitHub Pages + no backend yet — the operator asked for a quick Pages project and P0 stores nothing (DECISIONS.md ADR-0001).
 - **2026-09-28:** shared Supabase `lss-platform`, schema `themis` only, own `themis.schema_migrations`, Management-API applier, never `db push` (DECISIONS.md ADR-0002; supersedes ADR-0001's no-Supabase clause).
 - **2026-09-28:** `db:gate` applies the archive twice (idempotency proof); `themis` revokes default EXECUTE from PUBLIC (DECISIONS.md, P1.2).
+- **2026-09-28:** tenancy writes (memberships, invites, new workspaces) are RPC-only; RLS reads membership only via SECURITY DEFINER helpers (DECISIONS.md P1.4).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
