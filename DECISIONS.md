@@ -224,3 +224,7 @@ decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_
   no role needs UPDATE (proven in PGlite with a role that holds only DELETE on auth.users). What remains possible is a
   superuser/owner directly nulling an actor with nothing else changed. That is erasure, not tampering, and no API role
   can do it (no UPDATE grant).
+
+## 2026-09-28 — B2: per-function EXECUTE revokes are the rule; the schema-level default is a no-op
+
+The bootstrap statement `alter default privileges in schema themis revoke execute on functions from public` has no effect. Postgres cannot revoke the global PUBLIC default per schema (verified in PGlite: no pg_default_acl row). The global form would also change future functions of Hephaestus in the SHARED project, so it is rejected. **Rule:** every themis function revokes EXECUTE from public and anon explicitly in its own migration. `db:gate` fails any function PUBLIC or anon can execute, and that gate line is the enforcement. The pushed bootstrap file stays as-is (forward-only migrations); its statement is harmless.
