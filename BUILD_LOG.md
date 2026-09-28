@@ -116,3 +116,50 @@ themis` with/without `for role` GREEN), target-outside-themis (unqualified creat
   P1.4's declared scope, and the tenancy checks belong to the test-writer pass and the P1.8
   leak matrix.
 - Next: test-writer for P1.4, then P1.5 (decision core).
+
+## 2026-09-28 — P1.4 tests: `scripts/db-tenancy.test.ts` (test-writer)
+
+- Added: 82 Vitest tests (node environment, one shared PGlite, `installShim` + the REAL archive
+  applied twice, no SQL restated). This turns the builder's scratch 84-check script into committed
+  coverage. Covered: column shapes/types/NOT NULL for all four tables, the memberships PK, every FK
+  target and ON DELETE, and the CHECKs. Logo: 140000 accepted, 140001 refused, png/jpeg/webp pass,
+  svg/gif/remote/non-base64 refused. Workspace name 1..120 non-blank. Role enum on memberships and
+  invites. Duplicate membership. Lower-case and address-shaped email. token_hash 64 lower-hex and
+  globally unique. Helpers: SECURITY DEFINER, STABLE, `search_path=""`, EXECUTE for authenticated
+  only (anon and PUBLIC ACL both absent), they answer only for the caller, and anon cannot call
+  them. RLS is on for all four tables. The exact policy set, all TO authenticated. No policy
+  expression mentions memberships, and every workspace-scoped policy goes through
+  is_member/has_role. anon holds no table or column privilege. Grantees are exactly
+  authenticated + service_role, and authenticated's exact verbs and column-limited writes are
+  checked. Behaviour: anon is refused on every table. Positive controls: owner A sees 1/4/1/4
+  rows, and a loner sees 0 but can insert their own profile. A/B isolation (table-driven
+  `TENANT_TABLES`): UB reads 0 of A in each table, and UB's UPDATE/DELETE have no effect (refused
+  or 0 rows, plus an unchanged md5 snapshot). UB cannot insert a membership, invite or profile
+  into A. UB's helpers return false for A. Role gating: viewer and editor cannot rename, cannot
+  delete and see no invites. Admin can rename and sees invites but cannot delete. Owner can
+  rename and set the logo, but not created_by or id. Nobody can INSERT a workspace directly.
+  Profiles are self-edit only. Membership and invite insert/update/delete are refused even for
+  the owner (6 cases). Lifecycle: an owner delete cascades memberships and invites while B stays
+  intact. An auth.users delete cascades the profile and memberships and nulls created_by.
+  updated_at bumps on all four tables. Hephaestus side: public/auth classes, policies, functions
+  and triggers are identical before and after apply. No trigger on auth.users. The ledger still
+  holds 25 rows. No stray schema.
+- Harness for P1.5–P1.8: `actAs(uid | ANON | SUPERUSER, s => …)` runs in a transaction that is
+  always rolled back. The session gives `count`, `rows`, `attempt` (savepoint-wrapped, returns
+  ok/affected or the error) and `sudo`, plus `refused`/`noEffect`/`snapshot`. To cover a new
+  tenant table, append it to `TENANT_TABLES`. `DB_GATE_MIGRATIONS` points the suite at a mutated
+  archive copy.
+- Mutation-checked against archive COPIES in the session scratchpad, never the committed file:
+  - m1: workspaces_select `using (themis.is_member(id))` changed to `using (true)` → 4 RED,
+    including "B reads zero rows of A in themis.workspaces" and "no policy expression … /
+    helper".
+  - m2: `grant select on themis.invites to anon` appended → 3 RED: anon privilege, the grantee
+    set, and "anon cannot read themis.invites".
+  - m3: is_member switched to `security invoker` → 56 RED, starting with the definer check. The
+    recursion hit PGlite `ERRORDATA_STACK_SIZE exceeded` and poisoned the instance (BRAIN §5).
+  - m4: `grant update on themis.memberships to authenticated` appended → 2 RED: the exact-verbs
+    check and "promote via update is refused".
+- Suite: lint clean, typecheck clean (the file is covered by `tsconfig.scripts.json`), `npm test`
+  138 tests / 4 files green in about 2.1 s (the new file is about 1.7 s), db:check PASS, db:gate
+  GATE PASSED. `git diff supabase/` is empty. No live project touched, not pushed.
+- Next: P1.5 (decision core). Its test-writer should extend `TENANT_TABLES` in this file.

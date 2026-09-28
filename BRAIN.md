@@ -67,6 +67,10 @@ call".
   `themis.has_role(ws, roles[])` and `themis.shares_workspace(other)` (`search_path=''`, EXECUTE for
   authenticated only). Memberships and invites are SELECT-only for clients, and workspaces have no
   INSERT policy. Those writes go through P2.5/P2.6 SECURITY DEFINER RPCs. anon holds nothing.
+  **Tenancy tests:** `scripts/db-tenancy.test.ts` (82 tests, 1 shared PGlite, real archive applied
+  twice). Harness: `actAs(uid | ANON | SUPERUSER, s => …)` runs in an always-rolled-back transaction,
+  and `s.attempt` is savepoint-wrapped. The table-driven A/B isolation matrix is `TENANT_TABLES`, and
+  each new tenant table is appended there. `DB_GATE_MIGRATIONS` points it at a mutated archive copy.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -84,8 +88,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   §2/§8/§11 for the shared database. P1.2 done: `npm run db:gate` + bootstrap migration (local
   only, nothing applied live). P1.3 done: static migration guard `npm run db:check`, run first
   by `db:gate` (covered by `scripts/check-migrations.test.ts`, 39 tests, typechecked via `tsconfig.scripts.json`).
-  P1.4 done: tenancy migration (profiles, workspaces, memberships, invites + RLS helpers), local only.
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: test-writer for P1.4, then P1.5 (decision core).
+  P1.4 done: tenancy migration (profiles, workspaces, memberships, invites + RLS helpers), local only,
+  covered by `scripts/db-tenancy.test.ts` (82 tests; suite total 138).
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.5 (decision core).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -118,6 +123,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   so the JSDoc in `.mjs` scripts types the imports). A test file elsewhere outside `src/` is run by
   Vitest and linted but NOT typechecked unless a tsconfig include covers it. Found in P1.3.
 
+- **A policy recursion bug poisons a PGlite instance.** A non-definer helper that re-enters
+  memberships RLS ends in `ERRORDATA_STACK_SIZE exceeded`, and every later query on that instance
+  returns empty or fails. With one PGlite per test file, one such bug turns dozens of unrelated tests
+  RED. The FIRST failure is the real signal. Found in the P1.4 tests.
+- **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
+
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
   `import.meta.env.BASE_URL`, never a hard-coded path, so a move back under a path stays a one-line change.
 - **The kit's `format.sh` rewrites files on Write/Edit here** (this repo HAS a prettier config),
@@ -136,6 +147,17 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.4 tests) — `scripts/db-tenancy.test.ts`
+
+- Did: 82 Vitest tests replace the builder's scratch 84-check script. They cover shapes, FKs, CHECKs,
+  helpers, RLS, the exact policy set, grants, A/B isolation, role gating, RPC-only writes, cascades,
+  updated_at, and an unchanged Hephaestus side. Four mutations on archive copies each went RED:
+  ws-select `true`, anon grant, invoker helper, and update-memberships grant (BUILD_LOG.md). lint,
+  typecheck, 138 tests (about 2 s), db:check and db:gate are green. The committed migration is untouched.
+- Decided: the tenancy contract lives in Vitest, not in `db-gate.mjs`. P1.8 still owns the gate's
+  structural sweep and leak matrix, and it can reuse `actAs`/`TENANT_TABLES`.
+- Left off: P1.5 (decision core). Extend `TENANT_TABLES` for its tables.
 
 ### 2026-09-28 (P1.4) — tenancy migration
 
