@@ -466,6 +466,15 @@ $f$` on one line is RED (it sees `auth` after the `=`). Keep `set search_path = 
 
 ## 6. CHANGELOG (append-only — newest first)
 
+### 2026-09-29 — PAUSED by the operator ("pause till tomorrow") — RESUME HERE
+
+- **Done and pushed (CI green, HEAD `011bc1c`):** P1.1–P1.13; P2.1–P2.7. Numbers: 769 Vitest tests, db:gate 395 PASS, prove-red 55/55, e2e 6/6. Live at https://themis.adeonanalytics.com, still local-only mode.
+- **In progress, NOT committed:** P2.10 (auth UI + session). The builder was stopped mid-task while wiring routes, and its partial work is the untracked `src/features/`. Resume by re-dispatching P2.10 and telling the builder to review, finish or discard `src/features/`. Do not commit it as it stands.
+- **Blocked on the operator: P1.14, the live apply.** The operator said "yes apply", but the session permission classifier refused `execute_sql` writes to the shared project. A read-only check confirmed nothing was applied (no `themis` schema; Hephaestus ledger at 25). Two ways forward: (a) the operator allows `mcp__plugin_supabase_supabase__execute_sql` in /permissions, or (b) the operator pastes `ops-snapshots/sql/apply-1.sql`…`apply-7.sql` (built from HEAD `3773939`, 8 migrations in 7 transactions, gitignored) into the lss-platform SQL Editor, in order. **Rebuild those files from the current HEAD before use** if any migration has been added since.
+- **Before and after the apply:** `ops-snapshots/sql/fingerprint.sql` is ONE read-only statement: per snapshot section, a row count plus the md5 of all rows outside `themis`. The pre values are in `pre-fingerprint.json`, taken 2026-09-29. Re-run it after the apply; every non-themis hash must be identical. Then compare the live themis objects against a PGlite run of the same files, and smoke-test Hephaestus. Step 6 (expose `themis` in the Data API) is the operator's, in the Dashboard.
+- **Deviation to record at apply time:** the 67 KB cumulative dry-run was replaced by unit-by-unit atomic applies that stop on the first error (partial schema is inert while unexposed; runbook §5 covers it).
+- **Refused and NOT recorded:** writing "no checkpoint pauses" (ADR-0005) into CLAUDE.md/DECISIONS was blocked by the permission guard. The operator's continuous-build instruction held for that session only.
+
 ### 2026-09-29 (P2.7) — the P2 RPCs are gate lines and prove-red sabotages
 
 - Did: `scripts/db-gate.mjs` has a new "client RPCs" section with 103 lines (292 → 395 PASS). It covers the catalogue +
