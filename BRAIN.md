@@ -36,7 +36,16 @@ call".
     (`empty | incomplete | close (<5 pts) | clear`).
   - `src/App.tsx` — the single-page UI: frame → weigh → score → recommendation panel; the
     "AI analyst" card is explicitly marked roadmap.
-- **External services / keys:** none. `.env.example` reserves `VITE_SUPABASE_URL`,
+- **Database (ADR-0002, P1 in progress, nothing applied live yet):** Hephaestus's LIVE Supabase
+  project `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1), schema **`themis` only**. Never
+  `supabase db push`/`link`/`db reset`/`migration *` (Hephaestus owns
+  `supabase_migrations.schema_migrations`). Migrations: `supabase/migrations/YYYYMMDDHHMMSS_themis_NAME.sql`,
+  tracked in `themis.schema_migrations`, rehearsed by `npm run db:gate` (PGlite), proven by
+  `npm run db:gate:prove-red`, applied only by `npm run db:apply` (Management API, env
+  `SUPABASE_ACCESS_TOKEN` + `THEMIS_SUPABASE_PROJECT_REF`, dry-run default). No trigger on
+  `auth.users`; Edge Functions `themis-*`, secrets `THEMIS_*`; workspace logo stored in
+  `themis.workspaces`, not Storage. Rulebook: `zeus/specs/THEMIS_SPEC.md` §5a.
+- **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
 typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/deploy.yml`
@@ -49,7 +58,8 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 - **What's live:** P0 shell + a working client-side weighted decision matrix with
   Waterfall/Agile/YOLO × small/mid/enterprise criteria presets. 16 tests (12 model, 4 UI), black-and-gold Themis brand.
-- **What's in progress:** nothing half-done.
+- **What's in progress:** P1 (data spine) per `PLAN.md`. P1.1 done: ADR-0002 + constitution
+  §2/§8/§11 for the shared database. The `db:*` scripts named in §8 arrive in P1.2/P1.9/P1.11.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -87,6 +97,14 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.1) — ADR-0002: shared Supabase, own schema `themis`
+
+- Did: wrote ADR-0002 in DECISIONS.md (supersedes ADR-0001's "no Supabase" clause); constitution
+  §2 names Supabase schema `themis` + ADR-0002 deviation, §8 names `db:gate`, `db:gate:prove-red`,
+  `db:apply` (migrate) and "e2e arrives in P2", §11 forbids `supabase db push`/`link`. CLAUDE.md
+  recomposed with `kit.mjs apply`; `kit.mjs check` canonical. No live project touched.
+- Left off: P1.2 (`db:gate` harness + bootstrap migration).
 
 ### 2026-09-28 (domain) — live at https://themis.adeonanalytics.com (ADR-0003)
 
@@ -138,6 +156,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ## 7. DECISIONS (dated ADR-lite)
 
 - **2026-09-28:** GitHub Pages + no backend yet — the operator asked for a quick Pages project and P0 stores nothing (DECISIONS.md ADR-0001).
+- **2026-09-28:** shared Supabase `lss-platform`, schema `themis` only, own `themis.schema_migrations`, Management-API applier, never `db push` (DECISIONS.md ADR-0002; supersedes ADR-0001's no-Supabase clause).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

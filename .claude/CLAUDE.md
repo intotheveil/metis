@@ -2,7 +2,7 @@
      CORE    (§0 §3 §4 §5 §6 §7 §9 §10) come from .zeus/kit/CLAUDE.core.md and are synced fleet-wide.
      PROJECT (§1 §2 §8 §11) come from this repo's .claude/CLAUDE.project.md and are yours.
      Edit a CORE section in the kit, not here, or the next sync will overwrite it.
-     Composed 2026-09-28T16:28:59.301Z for themis. -->
+     Composed 2026-09-28T16:47:09.543Z for themis. -->
 
 # PROJECT CONSTITUTION — themis
 
@@ -65,18 +65,24 @@ informed as the chat that got too big. Start new chats freely — nothing is los
 ## 2. Stack (do not deviate without an ADR)
 
 - Frontend: React + Vite + TypeScript + Tailwind v4
-- Backend/data: **none yet** — P0 is a static, client-only app (see Deviations)
-- Auth: none yet
-- Tests: Vitest + Testing Library (jsdom). E2E (Playwright) not defined yet. A feature without
-  tests is not done.
+- Backend/data: **Supabase, schema `themis` only**, in Hephaestus's LIVE shared project
+  `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1). Nothing in `public`, `auth`, `storage`
+  or `supabase_migrations`. Server-side code = Edge Functions named `themis-*` (ADR-0002).
+- Auth: shared Supabase Auth (arrives in P2). No trigger on `auth.users`.
+- Tests: Vitest + Testing Library (jsdom); `db:gate` (PGlite) for the schema. Playwright e2e
+  arrives in P2. A feature without tests is not done.
 - Package manager: **npm** — npm only, never introduce pnpm/yarn/bun lockfiles.
 - Hosting/deploy: **GitHub Pages** via `.github/workflows/deploy.yml` on push to `main`;
   served at the root of `themis.adeonanalytics.com` (custom domain, ADR-0003).
-- Migrations: none yet. When Supabase arrives: local timestamped SQL files committed to the
-  repo AND applied live; the committed files are the source of truth.
+- Migrations: plain timestamped SQL files `supabase/migrations/YYYYMMDDHHMMSS_themis_NAME.sql`,
+  committed, forward-only, tracked in `themis.schema_migrations`, rehearsed by `npm run db:gate`
+  and applied live ONLY by `npm run db:apply` (Management API) with the operator's go.
 
-**Deviations from the house stack:** ADR-0001 in DECISIONS.md — GitHub Pages instead of
-Netlify, and no Supabase project until a phase needs persistence or server-side AI keys.
+**Deviations from the house stack:**
+- ADR-0001 in DECISIONS.md — GitHub Pages instead of Netlify (its "no Supabase" clause is
+  superseded by ADR-0002).
+- ADR-0002 in DECISIONS.md — shared Supabase project with an own schema `themis`, tracked in
+  `themis.schema_migrations` and applied by a Management-API applier instead of `supabase db push`.
 <!-- KIT:PROJECT:END §2 -->
 
 <!-- KIT:CORE:BEGIN §3 -->
@@ -184,8 +190,10 @@ install:    npm install
 dev:        npm run dev
 build:      npm run build
 test:       npm test
-e2e:        not defined yet
-migrate:    not defined yet (no database)
+e2e:        arrives in P2 (Playwright)
+db rehearse: npm run db:gate            # PGlite, throwaway, no credential (lands P1.2)
+db prove:   npm run db:gate:prove-red   # the gate must go RED on sabotage (lands P1.9)
+migrate:    npm run db:apply            # Management API; dry-run default, --apply only with operator go (lands P1.11)
 lint+types: npm run lint && npm run typecheck
 ```
 <!-- KIT:PROJECT:END §8 -->
@@ -250,6 +258,10 @@ production errors — investigate a fingerprint once, record the close-out, neve
 - **Static site = everything shipped is public.** Never put an API key (Anthropic or otherwise)
   in client code or a `VITE_*` var — Vite inlines it into the bundle. The AI analyst needs a
   server-side proxy (e.g. a Supabase Edge Function) first; that is an ADR, not a shortcut.
+- **Never `supabase db push` / `link` against this project** (nor `db reset` or
+  `migration *`). It is Hephaestus's live project and Hephaestus owns
+  `supabase_migrations.schema_migrations`. Themis migrations go through `npm run db:gate`, then
+  `npm run db:apply` with the operator's go (ADR-0002).
 - **Decision math lives in `src/lib/decision.ts`, pure and tested.** The UI never computes a
   score itself.
 - **Secrets:** env var NAMES only in tracked files. `.env` is gitignored; never stage it.

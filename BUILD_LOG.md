@@ -16,3 +16,10 @@
 ## 2026-09-28 (deploy)
 
 - LIVE: https://intotheveil.github.io/themis/ (run 36448167598: verify + deploy success; assets 200).
+
+## 2026-09-28 — P1.1 ADR-0002 + constitution for a shared database
+
+- Did: ADR-0002 in DECISIONS.md; CLAUDE.project.md §2/§8/§11 (Supabase schema `themis`, `db:gate`,
+  `db:gate:prove-red`, `db:apply`, e2e in P2, never `supabase db push`/`link`); BRAIN §2/§3/§6/§7.
+  CLAUDE.md recomposed via `kit.mjs apply`, `kit.mjs check` canonical. No migration, no live DB touched.
+- Next: P1.2.
