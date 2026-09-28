@@ -50,7 +50,7 @@ describe('brand', () => {
 })
 
 describe('brand assets', () => {
-  // Vitest runs with base "/"; the /themis/ prefix itself is checked against the production bundle.
+  // Asserting the BASE_URL derivation keeps the app portable between a domain root and a path.
   it('builds artwork URLs from BASE_URL, so the Pages base path applies', () => {
     render(<App />)
     const bust = screen.getByAltText(/marble bust/)

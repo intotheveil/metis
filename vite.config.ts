@@ -3,10 +3,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// GitHub Pages serves this repo at /themis/ — every asset URL must carry that base
-// or the deployed page loads a blank shell (DECISIONS.md ADR-0001).
+// Served at the root of themis.adeonanalytics.com (GitHub Pages custom domain, ADR-0003).
+// If it ever moves back under a path (e.g. github.io/themis/), this base must carry that path
+// or the deployed page loads a blank shell.
 export default defineConfig({
-  base: '/themis/',
+  base: '/',
   plugins: [react(), tailwindcss()],
   test: {
     environment: 'jsdom',

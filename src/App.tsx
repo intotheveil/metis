@@ -14,7 +14,8 @@ import {
 } from './lib/decision'
 
 // Brand art from the operator's Themis artwork (public/brand/, cropped from the source poster).
-// BASE_URL carries the Pages base path (/themis/) — a bare "/brand/…" 404s in production.
+// BASE_URL carries Vite's base path ("/" on themis.adeonanalytics.com). Keep using it: a hard-coded
+// "/brand/…" breaks the day the app is served under a path again.
 const BRAND = `${import.meta.env.BASE_URL}brand/`
 
 // Modules from the brand brief that are NOT built yet — shown as roadmap, never as features.

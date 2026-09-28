@@ -6,14 +6,14 @@ Themis structures a decision into options, criteria and scores, with criteria we
 how your team delivers (method) and how big it is (scale). The AI analyst is on the roadmap;
 today every number is yours, and nothing leaves the browser.
 
-Live: https://intotheveil.github.io/themis/
+Live: https://themis.adeonanalytics.com/
 
 ```
 npm install
 npm run dev        # local
 npm test           # vitest
 npm run lint && npm run typecheck
-npm run build      # static site in dist/, served under /themis/
+npm run build      # static site in dist/, served at the domain root
 ```
 
 Part of the intotheveil fleet (control plane: `zeus`). Read `BRAIN.md` before working here.

@@ -8,7 +8,7 @@
 
 - **Product:** Themis — AI-assisted decision-making for Waterfall, Agile and YOLO teams, from
   startups to enterprises.
-- **Repo:** `themis` (`intotheveil/themis`) · live at https://intotheveil.github.io/themis/
+- **Repo:** `themis` (`intotheveil/themis`) · live at https://themis.adeonanalytics.com/
 - **Users:** project leads, PMOs and founders making structured delivery decisions.
 - **Definition of done for a feature:** merged to `main`, lint + typecheck + tests green, the
   Pages deploy succeeds, no console errors, feature reachable in the UI.
@@ -26,7 +26,7 @@
   tests is not done.
 - Package manager: **npm** — npm only, never introduce pnpm/yarn/bun lockfiles.
 - Hosting/deploy: **GitHub Pages** via `.github/workflows/deploy.yml` on push to `main`;
-  served under the `/themis/` base path.
+  served at the root of `themis.adeonanalytics.com` (custom domain, ADR-0003).
 - Migrations: none yet. When Supabase arrives: local timestamped SQL files committed to the
   repo AND applied live; the committed files are the source of truth.
 
@@ -54,8 +54,8 @@ lint+types: npm run lint && npm run typecheck
 
 ## 11. Project-specific reminders
 
-- **GitHub Pages base path.** `vite.config.ts` sets `base: '/themis/'`; an absolute `/asset`
-  URL 404s in production while working in dev. Reference public files as `/themis/…` or import them.
+- **Base path.** `vite.config.ts` sets `base: '/'` for the custom domain. Build asset URLs from
+  `import.meta.env.BASE_URL` so a move back under a path (github.io/themis/) stays one-line.
 - **Static site = everything shipped is public.** Never put an API key (Anthropic or otherwise)
   in client code or a `VITE_*` var — Vite inlines it into the bundle. The AI analyst needs a
   server-side proxy (e.g. a Supabase Edge Function) first; that is an ADR, not a shortcut.
