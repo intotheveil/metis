@@ -24,8 +24,9 @@
   `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1). Nothing in `public`, `auth`, `storage`
   or `supabase_migrations`. Server-side code = Edge Functions named `themis-*` (ADR-0002).
 - Auth: shared Supabase Auth (arrives in P2). No trigger on `auth.users`.
-- Tests: Vitest + Testing Library (jsdom); `db:gate` (PGlite) for the schema. Playwright e2e
-  arrives in P2. A feature without tests is not done.
+- Tests: Vitest + Testing Library (jsdom); `db:gate` (PGlite) for the schema; Playwright e2e
+  against the production build on a Pages-like server (`npm run e2e`, in CI). A feature without
+  tests is not done.
 - Package manager: **npm** — npm only, never introduce pnpm/yarn/bun lockfiles.
 - Hosting/deploy: **GitHub Pages** via `.github/workflows/deploy.yml` on push to `main`;
   served at the root of `themis.adeonanalytics.com` (custom domain, ADR-0003).
@@ -34,10 +35,12 @@
   and applied live ONLY by `npm run db:apply` (Management API) with the operator's go.
 
 **Deviations from the house stack:**
+
 - ADR-0001 in DECISIONS.md — GitHub Pages instead of Netlify (its "no Supabase" clause is
   superseded by ADR-0002).
 - ADR-0002 in DECISIONS.md — shared Supabase project with an own schema `themis`, tracked in
   `themis.schema_migrations` and applied by a Management-API applier instead of `supabase db push`.
+
 <!-- KIT:PROJECT:END §2 -->
 
 <!-- KIT:PROJECT:BEGIN §8 -->

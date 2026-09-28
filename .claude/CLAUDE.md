@@ -2,7 +2,7 @@
      CORE    (§0 §3 §4 §5 §6 §7 §9 §10) come from .zeus/kit/CLAUDE.core.md and are synced fleet-wide.
      PROJECT (§1 §2 §8 §11) come from this repo's .claude/CLAUDE.project.md and are yours.
      Edit a CORE section in the kit, not here, or the next sync will overwrite it.
-     Composed 2026-09-28T21:06:35.606Z for themis. -->
+     Composed 2026-09-28T21:11:47.479Z for themis. -->
 
 # PROJECT CONSTITUTION — themis
 
@@ -69,8 +69,9 @@ informed as the chat that got too big. Start new chats freely — nothing is los
   `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1). Nothing in `public`, `auth`, `storage`
   or `supabase_migrations`. Server-side code = Edge Functions named `themis-*` (ADR-0002).
 - Auth: shared Supabase Auth (arrives in P2). No trigger on `auth.users`.
-- Tests: Vitest + Testing Library (jsdom); `db:gate` (PGlite) for the schema. Playwright e2e
-  arrives in P2. A feature without tests is not done.
+- Tests: Vitest + Testing Library (jsdom); `db:gate` (PGlite) for the schema; Playwright e2e
+  against the production build on a Pages-like server (`npm run e2e`, in CI). A feature without
+  tests is not done.
 - Package manager: **npm** — npm only, never introduce pnpm/yarn/bun lockfiles.
 - Hosting/deploy: **GitHub Pages** via `.github/workflows/deploy.yml` on push to `main`;
   served at the root of `themis.adeonanalytics.com` (custom domain, ADR-0003).
@@ -79,6 +80,7 @@ informed as the chat that got too big. Start new chats freely — nothing is los
   and applied live ONLY by `npm run db:apply` (Management API) with the operator's go.
 
 **Deviations from the house stack:**
+
 - ADR-0001 in DECISIONS.md — GitHub Pages instead of Netlify (its "no Supabase" clause is
   superseded by ADR-0002).
 - ADR-0002 in DECISIONS.md — shared Supabase project with an own schema `themis`, tracked in
