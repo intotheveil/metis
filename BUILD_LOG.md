@@ -39,3 +39,22 @@
   missing dir, the USAGE grant removed (3 FAIL lines), a non-idempotent migration, a SQL error.
   lint, typecheck, 17 tests green. No live project touched.
 - Next: P1.3 (static migration guard).
+
+## 2026-09-28 — P1.3 static migration guard
+
+- Did: `scripts/check-migrations.mjs` (`npm run db:check [dir]`, default `$DB_GATE_MIGRATIONS` then
+  `supabase/migrations`). `scripts/db-gate.mjs` runs it FIRST and exits 1 with nothing applied if
+  it is red. Rules: filename, forbidden-schema, target-outside-themis, auth-users-trigger,
+  create-extension, alter-system, drop-schema, alter-role, default-privileges (DECISIONS.md P1.3).
+  No migration was added.
+- Passed: `db:check` on the archive → PASS, exit 0. `db:gate` → guard PASS + 17 PASS, exit 0.
+  Proven RED (exit 1, `file:line [rule]` printed) on 19 scratch fixtures: public DDL, public DML,
+  auth write, storage policy, supabase_migrations insert, `grant … on schema public`,
+  `search_path = public`, unqualified `create table`, a string-literal `execute`, a trigger on
+  auth.users, create extension, alter system, drop schema, alter role, default privileges in
+  public, default privileges with no schema, and three bad filenames. GREEN on
+  `references auth.users` + `auth.uid()` and on `alter default privileges for role … in schema
+themis`. `db:gate` pointed at a red fixture prints "nothing was applied" and exits 1. lint,
+  typecheck and 17 tests are green.
+- Next: test-writer writes `scripts/check-migrations.test.ts`. Note: it is outside every tsconfig
+  `include`, so vitest runs it and eslint lints it, but `tsc -b` does not typecheck it. Then P1.4.

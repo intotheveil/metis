@@ -52,6 +52,14 @@ call".
   applies the archive twice (idempotency). Bootstrap `20260928200000_themis_schema.sql`: schema,
   `themis.schema_migrations` (RLS, no policy, no API grant), `themis.touch_updated_at()`, USAGE to
   anon/authenticated/service_role, EXECUTE revoked from PUBLIC by default in `themis`.
+  **Static guard (P1.3):** `scripts/check-migrations.mjs` (`npm run db:check [dir]`), run FIRST by
+  `db:gate`, which applies nothing if the guard is red. It prints `file:line [rule]` with the rules
+  `filename`, `forbidden-schema` (public/auth/storage/supabase_migrations: qualified, `schema x`
+  or in a search_path; only `references auth.users` and `auth.uid()` are allowed),
+  `target-outside-themis` (an unqualified DDL/DML target), `auth-users-trigger`,
+  `create-extension`, `alter-system`, `drop-schema`, `alter-role`, and `default-privileges`
+  (allowed only `in schema themis`). Comments are blanked and strings are kept. Exports
+  `checkMigrationSql(file, sql)`/`checkMigrationsDir(dir)` for tests.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -67,7 +75,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   Waterfall/Agile/YOLO × small/mid/enterprise criteria presets. 16 tests (12 model, 4 UI), black-and-gold Themis brand.
 - **What's in progress:** P1 (data spine) per `PLAN.md`. P1.1 done: ADR-0002 + constitution
   §2/§8/§11 for the shared database. P1.2 done: `npm run db:gate` + bootstrap migration (local
-  only, nothing applied live). `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11.
+  only, nothing applied live). P1.3 done: static migration guard `npm run db:check`, run first
+  by `db:gate` (its test file `scripts/check-migrations.test.ts` is test-writer's, pending).
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.4 (tenancy migration).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -75,13 +85,13 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 4. OUTSTANDING (the triage queue)
 
-| id  | sev | type     | summary                                                                                                                                                                                                                                                                                                                                                                                                           | status | added      |
-| --- | --- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
-| S1 | 🟠 | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility) | open | 2026-09-28 |
-| F1  | 🟠  | feature  | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                                                                                    | open   | 2026-09-28 |
-| F2  | 🔵  | feature  | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                                                                         | open   | 2026-09-28 |
-| F3  | 🔵  | feature  | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                                                                                      | open   | 2026-09-28 |
-| Q1  | 🟡  | question | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                                                                                                                                                                     | open   | 2026-09-28 |
+| id  | sev | type       | summary                                                                                                                                                        | status | added      |
+| --- | --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
+| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)            | open   | 2026-09-28 |
+| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001 | open   | 2026-09-28 |
+| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                      | open   | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                   | open   | 2026-09-28 |
+| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                  | open   | 2026-09-28 |
 
 ---
 
@@ -90,6 +100,10 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **Every migration must survive being run twice** — `db:gate` re-applies the whole archive.
   `create policy` and `create type` have no `if not exists`: use `drop policy if exists` first and a
   `do $$ … exception when duplicate_object` block for enums.
+- **The kit's guard hook blocks any Bash/PowerShell COMMAND whose text looks like destructive
+  SQL** (the DROP verb followed by table/database/schema and a name, or TRUNCATE TABLE and a name), even inside a heredoc
+  that only writes a test fixture. Put such fixture SQL in a file with the Write tool, or build it in
+  the test file. Never split the string to dodge the regex. Found in P1.3.
 - **Postgres grants EXECUTE on new functions to PUBLIC.** The bootstrap revokes that by default in
   `themis`, so an RPC for signed-in users needs an explicit `grant execute … to authenticated`.
 
@@ -111,6 +125,15 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.3) — static migration guard
+
+- Did: `scripts/check-migrations.mjs` + `npm run db:check`. `db-gate.mjs` now runs it before the
+  shim and applies nothing when it is red. It exits 0 on the archive. It was proven RED (exit 1,
+  `file:line [rule]`) on 19 scratch fixtures, one or more per rule, including a string-literal
+  evasion. Two allowed-pattern fixtures stay GREEN. lint, typecheck, 17 tests and db:gate are green.
+- Decided: the guard is stricter than the PLAN's four bullets, and that is recorded in DECISIONS.md.
+- Left off: test-writer writes `scripts/check-migrations.test.ts`; then P1.4.
 
 ### 2026-09-28 (P1.2) — `db:gate` harness and bootstrap migration
 

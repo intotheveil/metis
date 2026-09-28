@@ -13,6 +13,7 @@
 // positive-path check here, not surface live.
 //
 // P1.2 scope: the harness, apply + re-apply (idempotency), and the bootstrap's own contract.
+// P1.3 runs the static guard (./check-migrations.mjs) before anything is applied.
 // P1.8 adds the structural sweep over every themis table and the per-table leak matrix.
 
 import { PGlite } from '@electric-sql/pglite'
@@ -20,12 +21,23 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installShim, HEPHAESTUS_MIGRATION_ROWS } from './db-gate/shim.mjs'
+import { runGuard } from './check-migrations.mjs'
 
 // Overridable so the gate can be pointed at a MUTATED copy of the archive and proven to go red
 // (P1.9). A gate nobody has ever seen fail is not a gate.
 const MIG =
   process.env.DB_GATE_MIGRATIONS ??
   fileURLToPath(new URL('../supabase/migrations', import.meta.url))
+
+// --- static guard first (P1.3): nothing outside schema `themis`, well-formed names ----------------
+// A migration that reaches into Hephaestus's schemas must never even be executed, not even in wasm.
+if (!runGuard(MIG)) {
+  console.log(
+    '\nGATE FAILED — the static migration guard is red (npm run db:check); nothing was applied.',
+  )
+  process.exit(1)
+}
+console.log('')
 
 const db = new PGlite()
 const q = (sql, params) => db.query(sql, params)

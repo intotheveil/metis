@@ -92,3 +92,23 @@ in BOTH brains. Auth templates and providers are project-wide: changing them aff
   per creating role: `postgres` in both PGlite and the Management API.)
 - **The shim's `service_role` has BYPASSRLS**, as on the real platform, so service-only tables
   behave in the gate as they do live.
+
+## 2026-09-28 — P1.3 static migration guard: stricter than the four PLAN bullets
+
+- **Any reference into public/auth/storage/supabase_migrations is flagged, not only a DDL/DML
+  target.** That includes a `select` in a function body, `schema public` in a grant or in default
+  privileges, and a `search_path` that names one of those schemas. Telling a "target" from a "read"
+  in regex is fragile, and the only reads Themis needs are the two allowed ones (`references
+auth.users`, `auth.uid()`). If a later migration truly needs another (for example `auth.jwt()`),
+  add it to the allow-list in `check-migrations.mjs` in that migration's task. Do not loosen the
+  regex.
+- **An unqualified DDL/DML target is flagged (`target-outside-themis`).** `create table
+workspaces` resolves through the search_path and would land in Hephaestus's `public`. Every
+  target must be written `themis.x`. `create temp table` stays allowed because it is session-local.
+- **Comments are blanked, but string literals are kept.** Prose may name `public.profiles`, but
+  `execute 'delete from public.tasks'` is still caught. A false positive costs a rewording; a false
+  negative reaches the live shared project.
+- **`alter user` counts as `alter role`** (Postgres treats them as the same command). **Every
+  non-dot file in the migrations dir** must match the name pattern, so a mis-cased `.SQL` cannot be
+  silently skipped by the gate's `.sql` filter. Name violations report line 0 (the whole file).
+- **An empty or missing dir is red**, which matches db:gate's "nothing to prove" rule.
