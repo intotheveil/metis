@@ -1138,3 +1138,69 @@ with TS2589. I replaced it with a recursive `pluginNames()` that awaits each ent
 
 **Next:** P2.4 (Playwright). A deep-link spec must assert the rendered app, not `response.ok()`, because Pages returns 404
 with the app as the body.
+
+## 2026-09-29 — P2.4 (builder): Playwright wiring, e2e against the production build
+
+**Files:**
+- `package.json` / `package-lock.json`: devDep `@playwright/test` ^1.63.0; scripts
+  `e2e` = `tsc -p e2e/support/tsconfig.json && playwright test --project=local`, `e2e:live` = `node e2e/support/run-live.mjs`.
+- NEW `playwright.config.ts`: projects `local` (testDir `e2e/local`, baseURL `http://127.0.0.1:4173`) and `live` (testDir
+  `e2e/live`, baseURL `E2E_BASE_URL`, registered ONLY when every E2E_* name is set). webServer =
+  `npm run build && node e2e/support/pages-server.mjs` (just the server when `E2E_PREBUILT=1`), `reuseExistingServer:
+  false`, and `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` blanked so the build is always local-only.
+- NEW `e2e/support/pages-server.mjs`: a static server with GitHub Pages semantics (a file → 200; `dir/` → its index.html;
+  `dir` → 301 to `dir/`; anything else → `dist/404.html` WITH status 404; no 404.html → plain-text 404, so the app does not
+  boot). 127.0.0.1 only, path traversal refused, a busy port is a hard error.
+- NEW `e2e/support/fixtures.ts`: `test` with an auto console watchdog. Any console `error` or `pageerror` fails the test
+  after it runs. The only filtered line is Chromium's "Failed to load resource … 404" whose URL is the main-frame
+  document (the Pages fallback itself). A 404 on any other resource is still an error.
+- NEW `e2e/support/live-env.mjs` (`LIVE_ENV_NAMES`: E2E_BASE_URL, E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY,
+  E2E_USER_A_EMAIL, E2E_USER_B_EMAIL; `missingLiveEnv`) and `e2e/support/run-live.mjs` (skip message + exit 0 without the
+  env; otherwise runs the Playwright CLI via `process.execPath`, no shell, `--project=live --pass-with-no-tests`, with
+  `E2E_LIVE_ONLY=1` so no local server is started).
+- NEW `e2e/support/tsconfig.json`: typechecks `e2e/**` and `playwright.config.ts` (strict, checkJs). The root `tsc -b`
+  does not reference it (tsconfig*.json is outside P2.4's scope), so `npm run e2e` runs it first.
+- NEW `e2e/local/matrix.spec.ts` (3): home renders the matrix (200, THEMIS h1, Agile preset, score grid, brand art) with
+  zero console errors; signed out, YOLO, a partial score shows no winner, then A=5s/B=2s → "Option A leads by 75 points."
+  with ranking 100.0 / 25.0; equal scores → "Too close to call."
+- NEW `e2e/local/deep-links.spec.ts` (3): `/w/x/decisions/1` → status 404 + the Workspace page showing `(x)`, URL
+  unchanged; `/auth/callback?code=e2e-pkce-code_123&state=abc%2Fdef` → 404 + "Signing you in", `location.search` byte
+  for byte; `/no/such/page` → 404 + "Page not found", and its link returns to the matrix. Assertions are on the rendered
+  app; the 404 status is asserted to prove the FALLBACK path was taken, never `response.ok()`.
+- `.github/workflows/deploy.yml` (verify job, after check:bundle, before the Pages upload): Playwright version → cache
+  `~/.cache/ms-playwright` keyed on it → `npx playwright install --with-deps --only-shell chromium` → `npm run e2e` with
+  `E2E_PREBUILT=1` (tests the exact dist/ that is uploaded; no second build; 5 min timeout) → upload `test-results/` on
+  failure. Job name gains "+ e2e".
+- `.gitignore`: `test-results/`, `playwright-report/`, `blob-report/`.
+- `.claude/CLAUDE.project.md` §8: `e2e: npm run e2e` and `e2e live: npm run e2e:live`; recomposed with `kit.mjs apply
+  themis`, `kit.mjs check themis` → "core is canonical" (exit 0); `.claude/CLAUDE.md.bak` deleted.
+- Vitest already excluded `e2e/**` (vite.config.ts `test.exclude`, since P0): `npm test` still runs 12 files / 728.
+
+**Exercised (the runnable artifact, §5):**
+- `npm run e2e` (build + serve + 6 specs): 6 passed, Playwright 5.2 s, wall 6.9 s (first cold run 9.7 s).
+  CI-shaped `CI=1 E2E_PREBUILT=1 npm run e2e`: 6 passed in 2.6 s, wall 4.2 s, with the `github` reporter summary.
+- Mutations, each reverted (final `git status` shows no product file changed):
+  1. `dist/404.html` deleted → the 3 deep-link specs RED (the app never boots), the 3 `/` specs green.
+  2. Document-404 filter disabled → the 3 deep-link specs RED on "Failed to load resource … 404" for the document URL.
+     So Chromium really logs it and the filter is load-bearing and narrow.
+  3. `dist/brand/themis-icon.png` removed → all 6 RED on the icon's 404 (a sub-resource 404 is NOT filtered).
+  4. `console.error('e2e mutation')` appended to `src/main.tsx` → all 6 RED.
+  5. A stray pages-server left on 4173 → the run refuses ("already used", exit 1). That server was killed by PID.
+- `npm run e2e:live` without env → the SKIPPED message listing the 5 MISSING names, exit 0, nothing run. With dummy
+  env → the live project is registered, 0 tests (`--pass-with-no-tests`), no local build/server, exit 0. A bare
+  `npx playwright test --project=live` without env → "project not found" (the live project cannot be reached by accident).
+- After every run, `netstat` shows no LISTENING socket on 4173.
+
+**Green:** `npm run lint && npm run typecheck && npm test` (728/728) `&& npm run db:check && npm run db:gate` (GATE PASSED)
+`&& npm run build && npm run check:bundle` (OK, 11 files) `&& npm run e2e` (6/6). No live Supabase, no secret. Committed
+locally, NOT pushed. **The push edits `.github/workflows/deploy.yml`, so it needs the gh `workflow` scope (BRAIN §5)**;
+the CI e2e step is not yet observed green on GitHub.
+
+**Notes for the lead:**
+- The canonical home for the e2e tsconfig is a root `tsconfig.e2e.json` referenced from `tsconfig.json` (argus-news
+  does that), so `npm run typecheck` covers e2e too. Both files are outside P2.4's scope, so it lives at
+  `e2e/support/tsconfig.json` and runs inside `npm run e2e`. A follow-up with that scope can move it.
+- The composed CLAUDE.md §2 still says "Playwright e2e arrives in P2" (true, and §2 is outside P2.4's scope).
+- BRAIN F3 is resolved.
+
+**Next:** test-writer for P2.4 (e.g. unit tests for `resolveRequest` in pages-server and `missingLiveEnv`), then P2.5.

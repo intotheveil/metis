@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   verify:
-    name: Lint + typecheck + tests + db gates + build + bundle scan
+    name: Lint + typecheck + tests + db gates + build + bundle scan + e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -45,6 +45,32 @@ jobs:
       # server-only env names. A finding fails `verify`, so it never reaches the Pages artifact.
       - name: Bundle secret scan (check:bundle)
         run: npm run check:bundle
+      # e2e (PLAN P2.4): Playwright against the dist/ just built and scanned, served with GitHub Pages
+      # semantics (e2e/support/pages-server.mjs: a file, else 404.html with status 404), so the SPA
+      # fallback is really exercised. E2E_PREBUILT=1 tests THIS artifact, the one uploaded below, with
+      # no second build. No backend and no secret: the build has no Supabase env (local-only mode).
+      # Only the headless shell is installed, cached per Playwright version; system deps come from apt.
+      - name: Playwright version (browser cache key)
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+      - name: Install chromium (headless shell + system deps)
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: e2e against the production build (npm run e2e)
+        run: npm run e2e
+        env:
+          E2E_PREBUILT: '1'
+        timeout-minutes: 5
+      - name: Upload e2e failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          path: test-results/
+          retention-days: 7
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:

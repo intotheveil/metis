@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "test": "vitest run",
+    "e2e": "tsc -p e2e/support/tsconfig.json && playwright test --project=local",
+    "e2e:live": "node e2e/support/run-live.mjs",
     "format": "prettier --write .",
     "db:gate": "node scripts/db-gate.mjs",
     "db:check": "node scripts/check-migrations.mjs",
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

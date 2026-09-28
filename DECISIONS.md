@@ -368,3 +368,24 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   without a catch-all it would render an empty page.
 - **`basename` comes from `import.meta.env.BASE_URL`** (via `basenameFrom`), so the ADR-0003 "moving back under a path
   is one line" rule still holds for routing.
+
+## 2026-09-29 — P2.4: e2e runs on a Pages-like static server, not `vite preview`; the live project is opt-in by env
+
+- **`npm run e2e` serves `dist/` with `e2e/support/pages-server.mjs`, not `vite preview`** (PLAN P2.4's text says
+  `vite preview`; the lead asked for a Pages-like server instead). `vite preview` rewrites every HTML request to
+  index.html with status 200, so a deep-link spec there passes even with no `dist/404.html` (BRAIN §5). The server does
+  what Pages does: a file, else 404.html with status 404. Deleting 404.html turns the deep-link specs red (verified).
+- **Deep-link specs assert the rendered page AND status 404.** The status is part of the proof that the fallback path
+  (not a rewrite) served the page; `response.ok()` is never used.
+- **One console line is filtered: Chromium's "Failed to load resource … 404" for the main-frame DOCUMENT.** Pages returns
+  404 for every deep link, so without the filter no deep link could pass the zero-console-errors rule. It is matched by
+  the document's URL, so a 404 for any script, image or other resource still fails the test (verified).
+- **CI tests the artifact it ships.** `E2E_PREBUILT=1` makes the webServer skip its own build, so CI's e2e runs against
+  the dist/ that `check:bundle` just scanned and that is uploaded to Pages. Locally the webServer always builds (a
+  stale dist/ can never be under test). Both paths blank `VITE_SUPABASE_*`, so the build is local-only.
+- **Only the chromium headless shell is installed in CI**, cached per Playwright version.
+- _*The `live` project exists only when every E2E_* name is set,_* and `npm run e2e:live` without them prints the
+  missing names and exits 0 (a skip, not a pass). A bare `npx playwright test` can therefore never reach the shared
+  project by accident. The names are in `e2e/support/live-env.mjs`; P2.9/P2.14 may add to them.
+- **The e2e typecheck runs inside `npm run e2e` (`e2e/support/tsconfig.json`)** because the tsconfig files were out of
+  P2.4's scope. The fleet pattern (argus-news `tsconfig.e2e.json` referenced from `tsconfig.json`) is the better home.

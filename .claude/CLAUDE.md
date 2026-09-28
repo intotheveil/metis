@@ -2,7 +2,7 @@
      CORE    (§0 §3 §4 §5 §6 §7 §9 §10) come from .zeus/kit/CLAUDE.core.md and are synced fleet-wide.
      PROJECT (§1 §2 §8 §11) come from this repo's .claude/CLAUDE.project.md and are yours.
      Edit a CORE section in the kit, not here, or the next sync will overwrite it.
-     Composed 2026-09-28T16:47:09.543Z for themis. -->
+     Composed 2026-09-28T21:06:35.606Z for themis. -->
 
 # PROJECT CONSTITUTION — themis
 
@@ -190,7 +190,8 @@ install:    npm install
 dev:        npm run dev
 build:      npm run build
 test:       npm test
-e2e:        arrives in P2 (Playwright)
+e2e:        npm run e2e                 # Playwright `local`: the production build on a Pages-like server, no backend (P2.4)
+e2e live:   npm run e2e:live            # Playwright `live`: needs the E2E_* env, else skips with a message (specs from P2.14)
 db rehearse: npm run db:gate            # PGlite, throwaway, no credential (lands P1.2)
 db prove:   npm run db:gate:prove-red   # the gate must go RED on sabotage (lands P1.9)
 migrate:    npm run db:apply            # Management API; dry-run default, --apply only with operator go (lands P1.11)

@@ -49,7 +49,8 @@ install:    npm install
 dev:        npm run dev
 build:      npm run build
 test:       npm test
-e2e:        arrives in P2 (Playwright)
+e2e:        npm run e2e                 # Playwright `local`: the production build on a Pages-like server, no backend (P2.4)
+e2e live:   npm run e2e:live            # Playwright `live`: needs the E2E_* env, else skips with a message (specs from P2.14)
 db rehearse: npm run db:gate            # PGlite, throwaway, no credential (lands P1.2)
 db prove:   npm run db:gate:prove-red   # the gate must go RED on sabotage (lands P1.9)
 migrate:    npm run db:apply            # Management API; dry-run default, --apply only with operator go (lands P1.11)

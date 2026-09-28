@@ -1,0 +1,23 @@
+{
+  // Typechecks the e2e suite and playwright.config.ts (TS strict, CLAUDE.md §3.6). `npm run e2e`
+  // runs `tsc -p e2e/support/tsconfig.json` before Playwright, because the root `tsc -b` references
+  // only app/node/scripts. Paths are relative to this file.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["../**/*.ts", "../**/*.mjs", "../../playwright.config.ts"]
+}

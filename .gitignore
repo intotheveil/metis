@@ -23,3 +23,8 @@ dist
 
 # --- Live catalogue snapshots (db:snapshot, P1.12): local evidence, never committed ---
 ops-snapshots/
+
+# --- Playwright (PLAN P2.4): run artefacts, never committed ---
+test-results/
+playwright-report/
+blob-report/

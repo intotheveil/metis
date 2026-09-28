@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P2.3 tests, 728/728; P2.3 routing + Pages SPA fallback; P2.2 tests + resolveAppEnv fix `20e2b77` recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-29 (P2.4 Playwright wiring: `npm run e2e` on the production build via a Pages-like server, 6/6; `e2e:live` skips without E2E_* env; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -27,7 +27,7 @@ call".
 
 - **Stack:** React 19 + Vite 8 + TypeScript (strict) + Tailwind v4 (`@tailwindcss/vite`,
   theme tokens in `src/index.css` `@theme`). Vitest 5 + Testing Library (jsdom). ESLint 10 +
-  typescript-eslint, Prettier (`.prettierrc.json`, so the kit's `format.sh` is ACTIVE here).
+  typescript-eslint, Prettier (`.prettierrc.json`, so the kit's `format.sh` is ACTIVE here). Playwright 1.63 (P2.4).
 - **Data model:** none persisted. In-memory: `Criterion{id,name,weight 0–5}`, `Option{id,name}`,
   `Scores[optionId][criterionId] = 1–5`. All in `src/lib/decision.ts`.
 - **Key modules:**
@@ -169,11 +169,24 @@ projectRef, summary, sections}`, and `sections` = schemas, relations, constraint
   **Hephaestus's `npm test` is static** (its `rls-isolation.test.ts` reads migration FILES), so it cannot see the live
   DB. Its `e2e/tenant-isolation.spec.ts` WRITES (it signs up users) into whatever project `.env` names. Live
   regression = the diffs + `deploy-smoke` with `DEPLOY_URL` + Data API probes + an operator sign-in.
+- **e2e (P2.4):** `playwright.config.ts`, projects `local` (`e2e/local/*.spec.ts`) and `live` (`e2e/live/`, empty until
+  P2.14). `npm run e2e` = `tsc -p e2e/support/tsconfig.json` (the ONLY typecheck of e2e/** and the config; root `tsc -b`
+  does not cover them) + `playwright test --project=local`. Its webServer runs `npm run build` (skipped when
+  `E2E_PREBUILT=1`, which CI sets to test the dist/ it uploads) then `e2e/support/pages-server.mjs` on 127.0.0.1:4173
+  (`E2E_PORT`): Pages semantics, a file → 200, else `dist/404.html` with **status 404**, no 404.html → plain-text 404.
+  `VITE_SUPABASE_*` are blanked for that build, so e2e is always local-only. `e2e/support/fixtures.ts` exports `test`/
+  `expect` with an AUTO console watchdog: any console error or pageerror fails the test, except Chromium's
+  "Failed to load resource … 404" for the main-frame document URL. Specs import from `../support/fixtures`, never from
+  `@playwright/test` directly, or the watchdog is off. `npm run e2e:live` = `e2e/support/run-live.mjs`: needs every name
+  in `e2e/support/live-env.mjs` (E2E_BASE_URL, E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY, E2E_USER_A_EMAIL,
+  E2E_USER_B_EMAIL), else prints the missing ones and exits 0; the `live` project is registered only when they are all
+  set. CI (verify job, after check:bundle): cached chromium headless shell, `npm run e2e` with E2E_PREBUILT=1.
+  Vitest excludes `e2e/**` (vite.config.ts).
 - **External services / keys:** none wired yet. `@supabase/supabase-js` ^2.117.2 is a dependency (P2.2); the client
   exists only when `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` are both set at build. CI and the live site set
   neither, so they run local-only. Setting them is premature until P1.14 creates the live `themis` schema and it is exposed.
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
-typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/deploy.yml`
+typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.github/workflows/deploy.yml`
   (verify job, then `actions/deploy-pages`). Pages source is "GitHub Actions".
 - **Integration points:** none yet. Not wired to fleet telemetry (❓ decide when/if).
 
@@ -230,7 +243,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   matrix (703/703 green); `/signin`, `/auth/callback`, `/w/:id/*`, `/invite/:token` are shells. `dist/404.html` =
   `dist/index.html`; a deep link was proven on `vite preview` (200 + shell) and on a Pages emulator (404 + shell; control
   without 404.html = Pages' own 404). Bundle 234 → 275 kB (87 kB gzip). P2.3 tests done: `src/routes/routes.test.tsx` (20) +
-  `scripts/spa-fallback.test.ts` (5, real Vite build into a temp dir); suite **728**. P2.4 is next.
+  `scripts/spa-fallback.test.ts` (5, real Vite build into a temp dir); suite **728**.
+  P2.4 done (builder; committed locally, NOT pushed): Playwright (§2). `npm run e2e` = 6 specs on the production build
+  served with Pages semantics (the matrix + verdicts with zero console errors; `/w/x/decisions/1`, `/auth/callback?code=…`
+  with the query kept, and an unknown path, each status 404 + the rendered app); about 7 s locally. `npm run e2e:live`
+  skips cleanly without E2E_* env. CI runs e2e after check:bundle; the push needs the gh `workflow` scope, and the CI
+  e2e step has not been observed green yet. Five mutations went RED (BUILD_LOG P2.4). Next: test-writer for P2.4, then P2.5.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -246,7 +264,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 | T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                               | open                                                                                                                  | 2026-09-28 |
 | F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open                                                                                                                  | 2026-09-28 |
 | F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open                                                                                                                  | 2026-09-28 |
-| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | open                                                                                                                  | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | closed 2026-09-29 (P2.4)                                                                                                                  | 2026-09-28 |
 | Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                      | open                                                                                                                  | 2026-09-28 |
 
 ---
@@ -367,12 +385,33 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **`.flat(Infinity)` on Vite's `PluginOption` fails typecheck with TS2589** (type instantiation excessively deep) even
   though Vitest runs it green. Walk the option recursively as `unknown` (and await it: entries may be promises), as
   `scripts/spa-fallback.test.ts` `pluginNames()` does. Found in the P2.3 tests.
+- **Chromium logs a deep link's 404 DOCUMENT as a console error** ("Failed to load resource: … status of 404"). On Pages
+  (and the e2e pages-server) every deep link is a 404 document, so a naive zero-console-errors check fails every
+  deep-link spec. `e2e/support/fixtures.ts` filters exactly that line for the main-frame document URL only. Found in P2.4.
+- **An e2e spec that imports `test` from `@playwright/test` instead of `e2e/support/fixtures` silently loses the console
+  watchdog.** Found in P2.4.
+- **The P0 score picker toggles:** clicking the already-selected score clears it. A spec that scores a cell twice
+  with the same value ends up UNscored. Found in P2.4.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-29 (P2.4) — Playwright wiring: e2e against the production build
+
+- Did: `@playwright/test` 1.63 + chromium; `playwright.config.ts`; `e2e/support/{pages-server.mjs,fixtures.ts,live-env.mjs,
+  run-live.mjs,tsconfig.json}`; `e2e/local/{matrix,deep-links}.spec.ts` (6); scripts `e2e`/`e2e:live`; CI e2e step
+  (cached headless shell, E2E_PREBUILT=1); `.gitignore`; CLAUDE.project.md §8 + kit apply (check: canonical). Chain green
+  incl. `npm run e2e` 6/6 (~7 s). Mutations RED: no 404.html, filter off, missing asset, app console.error, stray server.
+  No live Supabase. Not pushed (the workflow edit needs the gh `workflow` scope).
+- Decided (DECISIONS.md P2.4): a Pages-like server over `vite preview`; assert rendered app + status 404; filter only the
+  document 404; CI tests the uploaded dist/; `live` project only with the full E2E_* env.
+- Resolved: F3.
+- Found: §5 (document 404 is a console error; specs must import the fixtures; the score picker toggles).
+- Left off: test-writer for P2.4 (unit tests for `resolveRequest`/`missingLiveEnv`); consider moving the e2e tsconfig to a
+  root `tsconfig.e2e.json` referenced by `tsc -b` (needs tsconfig scope). Then P2.5.
 
 ### 2026-09-28 (P2.3 tests) — permanent routing + SPA-fallback coverage
 
