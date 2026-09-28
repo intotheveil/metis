@@ -7,6 +7,9 @@
 // P1.6 — analysis and collaboration: swot_items, risks, comments, approvals (isolation matrix,
 //        composite decision/option FKs, comment-author rule, append-only approvals, constraints,
 //        column grants, defaults, cascades).
+// P1.7 — AI, billing, audit and plans: ai_runs, subscriptions, usage_monthly, audit_log (isolation
+//        matrix, server-side-only writes, append-only audit, service_role scope) and plans (anon
+//        read, proposal seed, idempotent re-apply, one quota basis).
 // The P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 TABLES, so
 // a later migration's tables extend the schema without rewriting P1.4's contract.
 //
@@ -105,12 +108,37 @@ const AP = {
 const ANALYSIS_TABLES = ['swot_items', 'risks', 'comments', 'approvals'] as const
 type AnalysisTable = (typeof ANALYSIS_TABLES)[number]
 
+// --- P1.7 AI, billing and audit fixture -------------------------------------------------------
+// Workspace A: ai_runs ARA (on DA, by the editor) and ARAF (on DAF); a Pro subscription; one
+// usage_monthly row for 2026-09; two audit rows (one by the VIEWER, one with no actor). Workspace
+// B: one of each (free subscription). No audit row names ownerA/adminA/editorA as actor: the
+// P1.4-P1.6 user-deletion tests delete those users (see the P1.7 cascade tests for why).
+const AR = {
+  A: '90000000-0000-4000-8000-0000000000a1',
+  AF: '90000000-0000-4000-8000-0000000000af',
+  B: '90000000-0000-4000-8000-0000000000b1',
+} as const
+const SUB = {
+  A: '91000000-0000-4000-8000-0000000000a1',
+  B: '91000000-0000-4000-8000-0000000000b1',
+} as const
+const AU = {
+  A1: '92000000-0000-4000-8000-0000000000a1',
+  A2: '92000000-0000-4000-8000-0000000000a2',
+  B1: '92000000-0000-4000-8000-0000000000b1',
+} as const
+const MONTH = '2026-09-01'
+/** The P1.7 tenant tables (plans is reference data, not tenant data). */
+const BILLING_TABLES = ['ai_runs', 'subscriptions', 'usage_monthly', 'audit_log'] as const
+type BillingTable = (typeof BILLING_TABLES)[number]
+const P17_TABLES = ['plans', ...BILLING_TABLES] as const
+
 /**
  * The isolation matrix. `ofA` selects workspace A's rows (rows UB must never see or change);
  * `probe` is a SET clause an attacker would try. P1.5+ appends its tables here.
  */
 const TENANT_TABLES: {
-  table: Table | DecisionTable | AnalysisTable
+  table: Table | DecisionTable | AnalysisTable | BillingTable
   ofA: string
   probe: string
 }[] = [
@@ -130,6 +158,10 @@ const TENANT_TABLES: {
   { table: 'risks', ofA: `workspace_id = '${WA}'`, probe: `likelihood = 1` },
   { table: 'comments', ofA: `workspace_id = '${WA}'`, probe: `body = 'pwned'` },
   { table: 'approvals', ofA: `workspace_id = '${WA}'`, probe: `reason = 'pwned'` },
+  { table: 'ai_runs', ofA: `workspace_id = '${WA}'`, probe: `accepted = '["pwned"]'` },
+  { table: 'subscriptions', ofA: `workspace_id = '${WA}'`, probe: `plan = 'free'` },
+  { table: 'usage_monthly', ofA: `workspace_id = '${WA}'`, probe: `ai_runs = 0` },
+  { table: 'audit_log', ofA: `workspace_id = '${WA}'`, probe: `action = 'pwned'` },
 ]
 
 // --- harness -----------------------------------------------------------------------------------
@@ -140,7 +172,9 @@ type Outcome = { ok: true; affected: number } | { ok: false; error: string }
 
 const ANON = Symbol('anon')
 const SUPERUSER = Symbol('superuser')
-type Who = string | typeof ANON | typeof SUPERUSER
+/** The service key (BYPASSRLS): Edge Functions and service-only RPCs (P1.7). */
+const SERVICE = Symbol('service_role')
+type Who = string | typeof ANON | typeof SUPERUSER | typeof SERVICE
 
 interface Session {
   /** Rows of a query; throws on error (use `attempt` when an error is the expected outcome). */
@@ -156,6 +190,9 @@ interface Session {
 async function setIdentity(who: Who) {
   if (who === SUPERUSER) {
     await db.exec(`reset role`)
+    await db.query(`select set_config('request.jwt.claim.sub', '', true)`)
+  } else if (who === SERVICE) {
+    await db.exec(`set local role service_role`)
     await db.query(`select set_config('request.jwt.claim.sub', '', true)`)
   } else if (who === ANON) {
     await db.exec(`set local role anon`)
@@ -324,6 +361,25 @@ beforeAll(async () => {
       ('${AP.A}', '${WA}', '${D.A}', 'rejected', 'Not ready', '${U.adminA}', '${U.adminA}', '${OLD}'),
       ('${AP.AF}', '${WA}', '${D.AF}', 'approved', 'Go', '${U.ownerA}', '${U.ownerA}', '${OLD}'),
       ('${AP.B}', '${WB}', '${D.B}', 'approved', 'B go', '${U.ownerB}', '${U.ownerB}', '${OLD}');
+    insert into themis.ai_runs (id, workspace_id, decision_id, kind, model, status, input_snapshot,
+                                output, tokens_in, tokens_out, cost_eur, created_by, updated_at) values
+      ('${AR.A}', '${WA}', '${D.A}', 'challenge', 'model-x', 'succeeded', '{"q":"A"}',
+       '{"s":[]}', 100, 50, 0.0123, '${U.editorA}', '${OLD}'),
+      ('${AR.AF}', '${WA}', '${D.AF}', 'explain', 'model-x', 'succeeded', '{"q":"AF"}',
+       '{"s":[]}', 80, 40, 0.0100, '${U.ownerA}', '${OLD}'),
+      ('${AR.B}', '${WB}', '${D.B}', 'challenge', 'model-x', 'succeeded', '{"q":"B"}',
+       '{"s":[]}', 90, 30, 0.0090, '${U.ownerB}', '${OLD}');
+    insert into themis.subscriptions (id, workspace_id, stripe_customer_id, stripe_subscription_id,
+                                      plan, seats, status, updated_at) values
+      ('${SUB.A}', '${WA}', 'cus_A1', 'sub_A1', 'pro', 1, 'active', '${OLD}'),
+      ('${SUB.B}', '${WB}', null, null, 'free', 1, 'active', '${OLD}');
+    insert into themis.usage_monthly (workspace_id, month, ai_runs, ai_cost_eur, updated_at) values
+      ('${WA}', '${MONTH}', 2, 0.0223, '${OLD}'),
+      ('${WB}', '${MONTH}', 1, 0.0090, '${OLD}');
+    insert into themis.audit_log (id, workspace_id, actor, entity, entity_id, action, after) values
+      ('${AU.A1}', '${WA}', '${U.viewerA}', 'comment', gen_random_uuid(), 'insert', '{"body":"x"}'),
+      ('${AU.A2}', '${WA}', null, 'subscription', '${SUB.A}', 'update', '{"plan":"pro"}'),
+      ('${AU.B1}', '${WB}', '${U.ownerB}', 'decision', '${D.B}', 'insert', '{}');
   `)
 }, 60_000)
 
@@ -747,6 +803,7 @@ describe('cross-workspace isolation: owner of B against workspace A', () => {
       expect(await s.count('profiles', `user_id = '${U.ownerB}'`)).toBe(1)
       for (const t of DECISION_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
       for (const t of ANALYSIS_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
+      for (const t of BILLING_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
     })
   })
 
@@ -2776,4 +2833,924 @@ describe('analysis (P1.6): cascades', () => {
       expect(await s.count('swot_items', `workspace_id = '${WA}' and created_by is null`)).toBe(2)
       expect(await s.count('risks', `workspace_id = '${WA}' and created_by is null`)).toBe(2)
     }))
+})
+
+// =================================================================================================
+// P1.7 AI, billing, audit and plans — structure
+// =================================================================================================
+
+describe('AI/billing/audit (P1.7): table shapes, keys, foreign keys and triggers', () => {
+  const N = 'numeric(10,4)'
+  it.each([
+    [
+      'plans',
+      [
+        'key:text!',
+        'active_decisions:integer',
+        'ai_runs_month:integer',
+        'ai_runs_per_seat:integer',
+        `ai_cost_ceiling_eur:${N}!`,
+        'members_max:integer',
+        'pdf_footer:boolean!',
+        'pdf_logo:boolean!',
+        'min_seats:integer!',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'ai_runs',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'kind:text!',
+        'model:text!',
+        'status:text!',
+        'input_snapshot:jsonb!',
+        'output:jsonb',
+        'tokens_in:integer!',
+        'tokens_out:integer!',
+        `cost_eur:${N}!`,
+        'accepted:jsonb!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'subscriptions',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'stripe_customer_id:text',
+        'stripe_subscription_id:text',
+        'plan:text!',
+        'seats:integer!',
+        'status:text!',
+        `period_end:${TSZ_}`,
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'usage_monthly',
+      [
+        'workspace_id:uuid!',
+        'month:date!',
+        'ai_runs:integer!',
+        `ai_cost_eur:${N}!`,
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'audit_log',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'actor:uuid',
+        'entity:text!',
+        'entity_id:uuid',
+        'action:text!',
+        'before:jsonb',
+        'after:jsonb',
+        `at:${TSZ_}!`,
+      ],
+    ],
+  ] as const)('themis.%s has the planned columns, types and NOT NULLs', async (t, want) => {
+    expect(await columnsOf(t)).toEqual(want)
+  })
+
+  it('primary and unique keys are exactly the planned ones', async () => {
+    const r = await db.query<{ k: string }>(
+      `select c.conrelid::regclass::text || ' ' || c.conname || ' ' || c.contype::text || ' (' ||
+              (select string_agg(a.attname, ',' order by k.ord)
+                 from unnest(c.conkey) with ordinality k(n, ord)
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n) || ')' as k
+         from pg_constraint c
+        where c.contype in ('p', 'u') and c.conrelid::regclass::text = any ($1::text[])`,
+      [P17_TABLES.map((t) => `themis.${t}`)],
+    )
+    expect(r.rows.map((x) => x.k).sort()).toEqual(
+      [
+        'themis.plans plans_pkey p (key)',
+        'themis.ai_runs ai_runs_pkey p (id)',
+        'themis.subscriptions subscriptions_pkey p (id)',
+        'themis.subscriptions subscriptions_workspace_id_key u (workspace_id)',
+        'themis.subscriptions subscriptions_stripe_customer_id_key u (stripe_customer_id)',
+        'themis.subscriptions subscriptions_stripe_subscription_id_key u (stripe_subscription_id)',
+        'themis.usage_monthly usage_monthly_pkey p (workspace_id,month)',
+        'themis.audit_log audit_log_pkey p (id)',
+      ].sort(),
+    )
+  })
+
+  it('foreign keys: ai_runs reaches decisions only through the composite key; plan -> plans(key)', async () => {
+    // c = cascade, n = set null, a = no action
+    expect(await fkList(P17_TABLES)).toEqual(
+      [
+        'themis.ai_runs(created_by)->auth.users(id) n',
+        'themis.ai_runs(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.subscriptions(workspace_id)->themis.workspaces(id) c',
+        'themis.subscriptions(plan)->themis.plans(key) a',
+        'themis.usage_monthly(workspace_id)->themis.workspaces(id) c',
+        'themis.audit_log(workspace_id)->themis.workspaces(id) c',
+        'themis.audit_log(actor)->auth.users(id) n',
+      ].sort(),
+    )
+  })
+
+  it('triggers: touch_updated_at on four tables; audit_log has only the BEFORE UPDATE append-only guard', async () => {
+    const r = await db.query<{ t: string }>(
+      `select c.relname || '.' || t.tgname || ' ' || p.proname || ' ' || t.tgtype::text as t
+         from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
+        where not t.tgisinternal and c.relnamespace = 'themis'::regnamespace
+          and c.relname = any ($1::text[])`,
+      [[...P17_TABLES]],
+    )
+    // tgtype 19 = ROW (1) | BEFORE (2) | UPDATE (16)
+    expect(r.rows.map((x) => x.t).sort()).toEqual(
+      [
+        'plans.plans_touch_updated_at touch_updated_at 19',
+        'ai_runs.ai_runs_touch_updated_at touch_updated_at 19',
+        'subscriptions.subscriptions_touch_updated_at touch_updated_at 19',
+        'usage_monthly.usage_monthly_touch_updated_at touch_updated_at 19',
+        'audit_log.audit_log_no_update audit_log_append_only 19',
+      ].sort(),
+    )
+  })
+
+  it('audit_log_append_only(): search_path pinned, not executable by anon or authenticated', async () => {
+    const [f] = (
+      await db.query<{ cfg: string[] | null; anon: boolean; auth: boolean }>(
+        `select p.proconfig as cfg,
+                has_function_privilege('anon', p.oid, 'EXECUTE') as anon,
+                has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth
+           from pg_proc p where p.oid = 'themis.audit_log_append_only()'::regprocedure`,
+      )
+    ).rows
+    expect(f.cfg).toEqual(['search_path=""'])
+    expect(f.anon).toBe(false)
+    expect(f.auth).toBe(false)
+  })
+
+  it('the plans seed is marked UNCONFIRMED in the catalogue', async () => {
+    const [r] = (
+      await db.query<{ c: string | null }>(`select obj_description('themis.plans'::regclass) as c`)
+    ).rows
+    expect(r.c).toMatch(/UNCONFIRMED/)
+  })
+})
+
+describe('AI/billing/audit (P1.7): RLS, policies and grants', () => {
+  it.each(P17_TABLES)('RLS is enabled on themis.%s', async (t) => {
+    const r = await db.query<{ on: boolean }>(
+      `select relrowsecurity as on from pg_class where oid = $1::regclass`,
+      [`themis.${t}`],
+    )
+    expect(r.rows[0].on).toBe(true)
+  })
+
+  it('the policy set is exactly one SELECT policy per table; no write policy anywhere', async () => {
+    const r = await db.query<{ p: string }>(
+      `select c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' || p.polroles::regrole[]::text as p
+         from pg_policy p join pg_class c on c.oid = p.polrelid
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])`,
+      [[...P17_TABLES]],
+    )
+    expect(r.rows.map((x) => x.p).sort()).toEqual(
+      [
+        'plans.plans_select r {anon,authenticated}',
+        'ai_runs.ai_runs_select r {authenticated}',
+        'subscriptions.subscriptions_select r {authenticated}',
+        'usage_monthly.usage_monthly_select r {authenticated}',
+        'audit_log.audit_log_select r {authenticated}',
+      ].sort(),
+    )
+  })
+
+  it('policy predicates: members via is_member, audit_log via has_role(owner, admin), plans true', async () => {
+    const r = await db.query<{ t: string; q: string; chk: string | null }>(
+      `select c.relname as t, pg_get_expr(p.polqual, p.polrelid) as q,
+              pg_get_expr(p.polwithcheck, p.polrelid) as chk
+         from pg_policy p join pg_class c on c.oid = p.polrelid
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])`,
+      [[...P17_TABLES]],
+    )
+    const q = Object.fromEntries(r.rows.map((x) => [x.t, x.q]))
+    expect(q.plans).toBe('true')
+    for (const t of ['ai_runs', 'subscriptions', 'usage_monthly'])
+      expect(q[t], t).toBe('themis.is_member(workspace_id)')
+    expect(q.audit_log).toMatch(
+      /^themis\.has_role\(workspace_id, ARRAY\['owner'::text, 'admin'::text\]\)$/,
+    )
+    expect(r.rows.filter((x) => x.chk !== null)).toEqual([])
+  })
+
+  it('table and column privileges are exactly the planned set per role', async () => {
+    const got: Record<string, Record<string, string[]>> = {}
+    for (const role of ['anon', 'authenticated', 'service_role']) {
+      got[role] = {}
+      for (const t of P17_TABLES) got[role][t] = await privsOf(role, t)
+    }
+    const RW = ['SELECT', 'INSERT', 'UPDATE', 'DELETE']
+    expect(got).toEqual({
+      anon: { plans: ['SELECT'], ai_runs: [], subscriptions: [], usage_monthly: [], audit_log: [] },
+      authenticated: {
+        plans: ['SELECT'],
+        ai_runs: ['SELECT'],
+        subscriptions: ['SELECT'],
+        usage_monthly: ['SELECT'],
+        audit_log: ['SELECT'],
+      },
+      service_role: {
+        plans: ['SELECT'],
+        ai_runs: RW,
+        subscriptions: RW,
+        usage_monthly: RW,
+        audit_log: ['SELECT', 'INSERT'],
+      },
+    })
+  })
+
+  it.each([
+    ['plans', ['anon', 'authenticated', 'service_role']],
+    ...BILLING_TABLES.map((t) => [t, ['authenticated', 'service_role']] as const),
+  ] as const)('themis.%s is granted to exactly %j', async (t, want) => {
+    const r = await db.query<{ g: string }>(
+      `select distinct grantee as g from information_schema.role_table_grants
+        where table_schema = 'themis' and table_name = $1
+       union
+       select distinct grantee from information_schema.column_privileges
+        where table_schema = 'themis' and table_name = $1
+       order by 1`,
+      [t],
+    )
+    expect(r.rows.map((x) => x.g).filter((g) => g !== 'postgres')).toEqual(want)
+  })
+
+  it('anon holds exactly SELECT on plans and nothing else in schema themis', async () => {
+    const r = await db.query<{ g: string }>(
+      `select c.relname || ' ' || p as g
+         from pg_class c cross join unnest($1::text[]) p
+        where c.relnamespace = 'themis'::regnamespace and c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and (has_table_privilege('anon', c.oid, p)
+               or (p in ('SELECT','INSERT','UPDATE','REFERENCES')
+                   and has_any_column_privilege('anon', c.oid, p)))
+       union all
+       select c.relname || ' ' || p from pg_class c cross join unnest(array['USAGE','SELECT','UPDATE']) p
+        where c.relnamespace = 'themis'::regnamespace and c.relkind = 'S'
+          and has_sequence_privilege('anon', c.oid, p)
+       union all
+       select f.oid::regprocedure::text || ' EXECUTE' from pg_proc f
+        where f.pronamespace = 'themis'::regnamespace and has_function_privilege('anon', f.oid, 'EXECUTE')`,
+      [PRIVS_],
+    )
+    expect(r.rows.map((x) => x.g)).toEqual(['plans SELECT'])
+  })
+})
+
+// =================================================================================================
+// P1.7 AI, billing, audit and plans — behaviour
+// =================================================================================================
+
+/** One attempted client write per verb, on workspace A's own rows (or the free plan). */
+const P17_WRITES: Record<(typeof P17_TABLES)[number], { ofA: string; ins: string; upd: string }> = {
+  ai_runs: {
+    ofA: `workspace_id = '${WA}'`,
+    ins: `insert into themis.ai_runs (workspace_id, decision_id, kind, model, input_snapshot)
+          values ('${WA}', '${D.A}', 'explain', 'm', '{}')`,
+    upd: `update themis.ai_runs set accepted = '["s1"]' where workspace_id = '${WA}'`,
+  },
+  subscriptions: {
+    ofA: `workspace_id = '${WA}'`,
+    ins: `insert into themis.subscriptions (workspace_id, plan, seats, status)
+          values ('${WA}', 'team', 99, 'active')`,
+    upd: `update themis.subscriptions set plan = 'team', seats = 99 where workspace_id = '${WA}'`,
+  },
+  usage_monthly: {
+    ofA: `workspace_id = '${WA}'`,
+    ins: `insert into themis.usage_monthly (workspace_id, month) values ('${WA}', '2026-10-01')`,
+    upd: `update themis.usage_monthly set ai_runs = 0, ai_cost_eur = 0 where workspace_id = '${WA}'`,
+  },
+  audit_log: {
+    ofA: `workspace_id = '${WA}'`,
+    ins: `insert into themis.audit_log (workspace_id, entity, action) values ('${WA}', 'decision', 'forged')`,
+    upd: `update themis.audit_log set action = 'rewritten' where workspace_id = '${WA}'`,
+  },
+  plans: {
+    ofA: `key = 'free'`,
+    ins: `insert into themis.plans (key, ai_runs_month, ai_cost_ceiling_eur, pdf_footer, pdf_logo)
+          values ('free', 100000, 999, false, true) on conflict (key) do nothing`,
+    upd: `update themis.plans set ai_runs_month = 100000 where key = 'free'`,
+  },
+}
+
+/** Every attempted write on `t` (INSERT, UPDATE, DELETE), outcome per verb. */
+const tryWrites = async (s: Session, t: (typeof P17_TABLES)[number]) => {
+  const w = P17_WRITES[t]
+  return {
+    insert: await s.attempt(w.ins),
+    update: await s.attempt(w.upd),
+    delete: await s.attempt(`delete from themis.${t} where ${w.ofA}`),
+  }
+}
+
+describe('AI/billing/audit (P1.7): server-side writes only', () => {
+  it.each(
+    (['owner', 'admin', 'editor', 'viewer'] as const).flatMap((role) =>
+      P17_TABLES.map((t) => [role, t] as const),
+    ),
+  )("the %s of A is refused INSERT, UPDATE and DELETE on A's themis.%s", (role, t) =>
+    actAs(
+      { owner: U.ownerA, admin: U.adminA, editor: U.editorA, viewer: U.viewerA }[role],
+      async (s) => {
+        const before = await snapshot(s, t, P17_WRITES[t].ofA)
+        expect(before.n).toBeGreaterThan(0)
+        const o = await tryWrites(s, t)
+        for (const [verb, out] of Object.entries(o))
+          expect(refused(out), `${verb}: ${JSON.stringify(out)}`).toBe(true)
+        expect(await snapshot(s, t, P17_WRITES[t].ofA)).toEqual(before)
+      },
+    ),
+  )
+
+  it.each(P17_TABLES)('anon is refused INSERT, UPDATE and DELETE on themis.%s', (t) =>
+    actAs(ANON, async (s) => {
+      const before = await snapshot(s, t, P17_WRITES[t].ofA)
+      const o = await tryWrites(s, t)
+      for (const [verb, out] of Object.entries(o))
+        expect(refused(out), `${verb}: ${JSON.stringify(out)}`).toBe(true)
+      expect(await snapshot(s, t, P17_WRITES[t].ofA)).toEqual(before)
+    }),
+  )
+
+  it('service_role writes ai_runs: insert, settle, accept, delete', () =>
+    actAs(SERVICE, async (s) => {
+      const [run] = await s.rows<{ id: string; status: string; created_by: string | null }>(
+        `insert into themis.ai_runs (workspace_id, decision_id, kind, model, input_snapshot)
+         values ($1, $2, 'stress_test', 'model-x', '{"q":1}') returning id, status, created_by`,
+        [WA, D.A],
+      )
+      expect(run.status).toBe('reserved')
+      expect(run.created_by).toBeNull() // auth.uid() is null under the service key
+      expect(
+        await s.attempt(
+          `update themis.ai_runs set status = 'succeeded', accepted = '["s1"]' where id = $1`,
+          [run.id],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.attempt(`delete from themis.ai_runs where id = $1`, [AR.AF])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      // BYPASSRLS: the service key sees every workspace's runs.
+      expect(await s.count('ai_runs')).toBe(3)
+    }))
+
+  it('service_role writes subscriptions and usage_monthly', () =>
+    actAs(SERVICE, async (s) => {
+      expect(
+        await s.attempt(`update themis.subscriptions set plan = 'team', seats = 3 where id = $1`, [
+          SUB.A,
+        ]),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.attempt(`delete from themis.subscriptions where id = $1`, [SUB.B])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      expect(
+        await s.attempt(
+          `insert into themis.subscriptions (workspace_id, stripe_customer_id, stripe_subscription_id,
+                                             plan, status) values ($1, 'cus_B1', 'sub_B1', 'pro', 'trialing')`,
+          [WB],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(
+        await s.attempt(
+          `insert into themis.usage_monthly (workspace_id, month) values ($1, '2026-10-01')`,
+          [WA],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(
+        await s.attempt(
+          `update themis.usage_monthly set ai_runs = ai_runs + 1, ai_cost_eur = ai_cost_eur + 0.01
+            where workspace_id = $1 and month = $2`,
+          [WA, MONTH],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(
+        await s.attempt(
+          `delete from themis.usage_monthly where workspace_id = $1 and month = '2026-10-01'`,
+          [WA],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('usage_monthly', `workspace_id = '${WA}' and ai_runs = 3`)).toBe(1)
+    }))
+
+  it('service_role may INSERT audit_log but never UPDATE or DELETE it', () =>
+    actAs(SERVICE, async (s) => {
+      expect(
+        await s.attempt(
+          `insert into themis.audit_log (workspace_id, entity, entity_id, action, before, after)
+           values ($1, 'decision', $2, 'approve', '{"status":"in_review"}', '{"status":"approved"}')`,
+          [WA, D.A],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('audit_log', `workspace_id = '${WA}'`)).toBe(3)
+      const before = await snapshot(s, 'audit_log', 'true')
+      const upd = await s.attempt(
+        `update themis.audit_log set action = 'x' where workspace_id = $1`,
+        [WA],
+      )
+      const del = await s.attempt(`delete from themis.audit_log where workspace_id = $1`, [WA])
+      expect(refused(upd), JSON.stringify(upd)).toBe(true)
+      expect(refused(del), JSON.stringify(del)).toBe(true)
+      expect(await snapshot(s, 'audit_log', 'true')).toEqual(before)
+    }))
+
+  it('service_role cannot write plans (plan values change only by migration)', () =>
+    actAs(SERVICE, async (s) => {
+      const before = await snapshot(s, 'plans', 'true')
+      const o = await tryWrites(s, 'plans')
+      for (const [verb, out] of Object.entries(o))
+        expect(refused(out), `${verb}: ${JSON.stringify(out)}`).toBe(true)
+      expect(await snapshot(s, 'plans', 'true')).toEqual(before)
+      expect(await s.count('plans')).toBe(3)
+    }))
+
+  it('audit_log is append-only even for the table owner: UPDATE raises audit_log_append_only', () =>
+    actAs(SUPERUSER, async (s) => {
+      const o = await s.attempt(`update themis.audit_log set action = 'rewritten' where id = $1`, [
+        AU.A1,
+      ])
+      expect(o.ok).toBe(false)
+      expect(!o.ok && o.error).toMatch(/audit_log_append_only/)
+      expect(await s.count('audit_log', `id = '${AU.A1}' and action = 'insert'`)).toBe(1)
+    }))
+})
+
+describe('AI/billing/audit (P1.7): read rules', () => {
+  it.each([
+    ['owner', U.ownerA],
+    ['admin', U.adminA],
+    ['editor', U.editorA],
+    ['viewer', U.viewerA],
+  ])("the %s of A reads A's ai_runs, subscription and usage, and nothing of B", (_r, who) =>
+    actAs(who, async (s) => {
+      expect(await s.count('ai_runs')).toBe(2)
+      expect(await s.count('ai_runs', `workspace_id = '${WA}'`)).toBe(2)
+      expect(await s.count('subscriptions')).toBe(1)
+      expect(await s.count('subscriptions', `id = '${SUB.A}' and plan = 'pro'`)).toBe(1)
+      expect(await s.count('usage_monthly')).toBe(1)
+      expect(await s.count('usage_monthly', `workspace_id = '${WA}'`)).toBe(1)
+      for (const t of BILLING_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(0)
+    }),
+  )
+
+  it.each([
+    ['owner', U.ownerA, 2],
+    ['admin', U.adminA, 2],
+    ['editor', U.editorA, 0],
+    ['viewer', U.viewerA, 0],
+  ] as const)("the %s of A reads %i of A's audit_log rows (owner/admin only)", (_r, who, n) =>
+    actAs(who, async (s) => {
+      expect(await s.count('audit_log')).toBe(n)
+      expect(await s.count('audit_log', `workspace_id = '${WB}'`)).toBe(0)
+    }),
+  )
+
+  it('the viewer cannot read the audit row they are the actor of', () =>
+    actAs(U.viewerA, async (s) => {
+      expect(await s.count('audit_log', `id = '${AU.A1}'`)).toBe(0)
+    }))
+
+  it("the owner of B reads B's own rows in all four tables, and its own audit log", () =>
+    actAs(U.ownerB, async (s) => {
+      for (const t of BILLING_TABLES) expect(await s.count(t), t).toBe(1)
+      expect(await s.count('audit_log', `id = '${AU.B1}'`)).toBe(1)
+    }))
+
+  it('a user with no workspace reads none of the four tenant tables, but all three plans', () =>
+    actAs(U.loner, async (s) => {
+      for (const t of BILLING_TABLES) expect(await s.count(t), t).toBe(0)
+      expect(await s.count('plans')).toBe(3)
+    }))
+
+  it('anon reads all three plans and is refused on the four tenant tables', () =>
+    actAs(ANON, async (s) => {
+      expect(await s.count('plans')).toBe(3)
+      for (const t of BILLING_TABLES) {
+        const o = await s.attempt(`select * from themis.${t}`)
+        expect(refused(o), `${t}: ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+})
+
+describe('AI/billing/audit (P1.7): the plans seed', () => {
+  const planRows = (s: Session) =>
+    s.rows(
+      `select key, active_decisions, ai_runs_month, ai_runs_per_seat,
+              ai_cost_ceiling_eur::text as ceiling, members_max, pdf_footer, pdf_logo, min_seats
+         from themis.plans order by key`,
+    )
+  const PROPOSAL = [
+    {
+      key: 'free',
+      active_decisions: 3,
+      ai_runs_month: 10,
+      ai_runs_per_seat: null,
+      ceiling: '1.0000',
+      members_max: 1,
+      pdf_footer: true,
+      pdf_logo: false,
+      min_seats: 1,
+    },
+    {
+      key: 'pro',
+      active_decisions: null,
+      ai_runs_month: 200,
+      ai_runs_per_seat: null,
+      ceiling: '10.0000',
+      members_max: 1,
+      pdf_footer: false,
+      pdf_logo: false,
+      min_seats: 1,
+    },
+    {
+      key: 'team',
+      active_decisions: null,
+      ai_runs_month: null,
+      ai_runs_per_seat: 500,
+      ceiling: '60.0000',
+      members_max: null,
+      pdf_footer: false,
+      pdf_logo: true,
+      min_seats: 3,
+    },
+  ]
+  const p17File = () => {
+    const f = readdirSync(MIG).find((x) => x.endsWith('_themis_ai_billing_audit.sql'))
+    if (!f) throw new Error(`no *_themis_ai_billing_audit.sql in ${MIG}`)
+    return readFileSync(path.join(MIG, f), 'utf8')
+  }
+
+  it('exactly three plans, with the spec §4 proposal values (anon sees the same)', async () => {
+    await actAs(SUPERUSER, async (s) => expect(await planRows(s)).toEqual(PROPOSAL))
+    await actAs(ANON, async (s) => expect(await planRows(s)).toEqual(PROPOSAL))
+  })
+
+  it('re-applying the migration neither duplicates nor overwrites a changed plan, and restores a missing one', () =>
+    actAs(SUPERUSER, async (s) => {
+      // A later migration (P4.9) confirms a value; a plan row goes missing.
+      await s.rows(`update themis.plans set ai_runs_month = 250, members_max = 2 where key = 'pro'`)
+      await s.rows(`delete from themis.plans where key = 'team'`)
+      await db.exec(p17File())
+      const rows = await planRows(s)
+      expect(rows).toHaveLength(3)
+      expect(rows[1]).toMatchObject({ key: 'pro', ai_runs_month: 250, members_max: 2 })
+      expect(rows[2]).toEqual(PROPOSAL[2])
+      expect(rows[0]).toEqual(PROPOSAL[0])
+    }))
+
+  it('exactly one quota basis per plan (plans_one_quota_basis)', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const [set, key] of [
+        ['ai_runs_per_seat = 5', 'free'], // both
+        ['ai_runs_month = null', 'pro'], // neither
+        ['ai_runs_per_seat = null', 'team'], // neither
+        ['ai_runs_month = 100', 'team'], // both
+      ]) {
+        const o = await s.attempt(`update themis.plans set ${set} where key = '${key}'`)
+        expect(
+          checkRefused(o, 'plans_one_quota_basis'),
+          `${key} ${set}: ${JSON.stringify(o)}`,
+        ).toBe(true)
+      }
+      // Positive control: switching basis in one statement is allowed.
+      expect(
+        await s.attempt(
+          `update themis.plans set ai_runs_month = null, ai_runs_per_seat = 20 where key = 'pro'`,
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+    }))
+
+  it('plan key is free|pro|team; min_seats >= 1; ceiling >= 0; members_max >= 1', () =>
+    actAs(SUPERUSER, async (s) => {
+      const gold = await s.attempt(
+        `insert into themis.plans (key, ai_runs_month, ai_cost_ceiling_eur, pdf_footer, pdf_logo)
+         values ('gold', 10, 1, true, false)`,
+      )
+      expect(checkRefused(gold, 'plans_key_check'), JSON.stringify(gold)).toBe(true)
+      for (const [set, c] of [
+        ['min_seats = 0', 'plans_min_seats_check'],
+        ['ai_cost_ceiling_eur = -0.0001', 'plans_ai_cost_ceiling_eur_check'],
+        ['members_max = 0', 'plans_members_max_check'],
+        ['ai_runs_month = -1', 'plans_ai_runs_month_check'],
+      ]) {
+        const o = await s.attempt(`update themis.plans set ${set} where key = 'free'`)
+        expect(checkRefused(o, c), `${set}: ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+})
+
+describe('AI/billing/audit (P1.7): constraints (as superuser unless stated)', () => {
+  const OK = { ok: true, affected: 1 }
+  /** Insert an ai_run on DA; `cols` are SQL literals overriding the defaults. */
+  const aiRun = (s: Session, cols: Record<string, string>) => {
+    const all: Record<string, string> = {
+      workspace_id: `'${WA}'`,
+      decision_id: `'${D.A}'`,
+      kind: `'challenge'`,
+      model: `'m'`,
+      input_snapshot: `'{}'`,
+      ...cols,
+    }
+    return s.attempt(
+      `insert into themis.ai_runs (${Object.keys(all).join(', ')}) values (${Object.values(all).join(', ')})`,
+    )
+  }
+
+  it('ai_runs.kind is one of the five kinds', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const k of ['challenge', 'missing_criteria', 'stress_test', 'explain', 'swot_draft'])
+        expect(await aiRun(s, { kind: `'${k}'` }), k).toEqual(OK)
+      for (const k of ['summarize', 'Challenge', ''])
+        expect(checkRefused(await aiRun(s, { kind: `'${k}'` }), 'ai_runs_kind_check'), k).toBe(true)
+    }))
+
+  it('ai_runs.status is reserved|succeeded|failed, default reserved; defaults for tokens, cost, accepted', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const st of ['reserved', 'succeeded', 'failed'])
+        expect(await aiRun(s, { status: `'${st}'` }), st).toEqual(OK)
+      for (const st of ['pending', 'error'])
+        expect(
+          checkRefused(await aiRun(s, { status: `'${st}'` }), 'ai_runs_status_check'),
+          st,
+        ).toBe(true)
+      const [r] = await s.rows(
+        `insert into themis.ai_runs (workspace_id, decision_id, kind, model, input_snapshot)
+         values ($1, $2, 'explain', 'm', '{}')
+         returning status, tokens_in, tokens_out, cost_eur::text as cost, accepted`,
+        [WA, D.A],
+      )
+      expect(r).toEqual({
+        status: 'reserved',
+        tokens_in: 0,
+        tokens_out: 0,
+        cost: '0.0000',
+        accepted: [],
+      })
+    }))
+
+  it('ai_runs.accepted must be a JSON array (insert and update); input_snapshot an object', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await aiRun(s, { accepted: `'[{"id":"s1","accepted":true}]'` })).toEqual(OK)
+      for (const v of [`'{}'`, `'"s1"'`, `'null'`, `'1'`])
+        expect(checkRefused(await aiRun(s, { accepted: v }), 'ai_runs_accepted_check'), v).toBe(
+          true,
+        )
+      const upd = await s.attempt(
+        `update themis.ai_runs set accepted = '{"s1":true}' where id = $1`,
+        [AR.A],
+      )
+      expect(checkRefused(upd, 'ai_runs_accepted_check'), JSON.stringify(upd)).toBe(true)
+      for (const v of [`'[]'`, `'"x"'`])
+        expect(
+          checkRefused(await aiRun(s, { input_snapshot: v }), 'ai_runs_input_snapshot_check'),
+          v,
+        ).toBe(true)
+    }))
+
+  it('ai_runs: tokens and cost are never negative; model is 1..100 chars', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const [c, v] of [
+        ['tokens_in', '-1'],
+        ['tokens_out', '-1'],
+        ['cost_eur', '-0.0001'],
+      ])
+        expect(checkRefused(await aiRun(s, { [c]: v }), `ai_runs_${c}_check`), c).toBe(true)
+      expect(checkRefused(await aiRun(s, { model: `''` }), 'ai_runs_model_check')).toBe(true)
+      expect(
+        checkRefused(await aiRun(s, { model: `repeat('m', 101)` }), 'ai_runs_model_check'),
+      ).toBe(true)
+      expect(await aiRun(s, { model: `repeat('m', 100)` })).toEqual(OK)
+    }))
+
+  it('the composite FK refuses a run pointing across workspaces, even from the service key', () =>
+    actAs(SERVICE, async (s) => {
+      // service_role bypasses RLS: the FK is the only barrier left.
+      const bOnA = await aiRun(s, { workspace_id: `'${WB}'`, decision_id: `'${D.A}'` })
+      expect(fkRefused(bOnA, 'ai_runs_decision_fkey'), JSON.stringify(bOnA)).toBe(true)
+      const aOnB = await aiRun(s, { workspace_id: `'${WA}'`, decision_id: `'${D.B}'` })
+      expect(fkRefused(aOnB, 'ai_runs_decision_fkey'), JSON.stringify(aOnB)).toBe(true)
+      const repoint = await s.attempt(`update themis.ai_runs set decision_id = $1 where id = $2`, [
+        D.A,
+        AR.B,
+      ])
+      expect(fkRefused(repoint, 'ai_runs_decision_fkey'), JSON.stringify(repoint)).toBe(true)
+      // Positive control: B's run on B's own decision.
+      expect(await aiRun(s, { workspace_id: `'${WB}'`, decision_id: `'${D.B}'` })).toEqual(OK)
+      await s.sudo(async () => expect(await s.count('ai_runs', `workspace_id = '${WB}'`)).toBe(2))
+    }))
+
+  it('subscriptions: one per workspace; plan must exist in plans and defaults to free', () =>
+    actAs(SUPERUSER, async (s) => {
+      const second = await s.attempt(
+        `insert into themis.subscriptions (workspace_id, plan, status) values ($1, 'team', 'active')`,
+        [WA],
+      )
+      expect(dupRefused(second, 'subscriptions_workspace_id_key'), JSON.stringify(second)).toBe(
+        true,
+      )
+      await s.rows(`delete from themis.subscriptions where id = $1`, [SUB.B])
+      const gold = await s.attempt(
+        `insert into themis.subscriptions (workspace_id, plan, status) values ($1, 'gold', 'active')`,
+        [WB],
+      )
+      expect(fkRefused(gold, 'subscriptions_plan_fkey'), JSON.stringify(gold)).toBe(true)
+      const [r] = await s.rows(
+        `insert into themis.subscriptions (workspace_id, status) values ($1, 'active') returning plan, seats`,
+        [WB],
+      )
+      expect(r).toEqual({ plan: 'free', seats: 1 })
+      // A plan in use cannot be deleted out from under its subscribers (no action).
+      const del = await s.attempt(`delete from themis.plans where key = 'pro'`)
+      expect(fkRefused(del, 'subscriptions_plan_fkey'), JSON.stringify(del)).toBe(true)
+    }))
+
+  it('subscriptions: Stripe id formats (cus_…, sub_…) and uniqueness across workspaces', () =>
+    actAs(SUPERUSER, async (s) => {
+      const set = (col: string, v: string) =>
+        s.attempt(`update themis.subscriptions set ${col} = $1 where id = $2`, [v, SUB.B])
+      for (const v of ['cust_1', 'cus_', 'cus_Ab-1', 'sub_A9', ' cus_A9'])
+        expect(
+          checkRefused(
+            await set('stripe_customer_id', v),
+            'subscriptions_stripe_customer_id_check',
+          ),
+          v,
+        ).toBe(true)
+      for (const v of ['si_1', 'sub_', 'sub_A 9', 'cus_A9'])
+        expect(
+          checkRefused(
+            await set('stripe_subscription_id', v),
+            'subscriptions_stripe_subscription_id_check',
+          ),
+          v,
+        ).toBe(true)
+      expect(await set('stripe_customer_id', 'cus_Zz09')).toEqual(OK)
+      expect(await set('stripe_subscription_id', 'sub_Zz09')).toEqual(OK)
+      const dupCus = await set('stripe_customer_id', 'cus_A1')
+      expect(
+        dupRefused(dupCus, 'subscriptions_stripe_customer_id_key'),
+        JSON.stringify(dupCus),
+      ).toBe(true)
+      const dupSub = await set('stripe_subscription_id', 'sub_A1')
+      expect(
+        dupRefused(dupSub, 'subscriptions_stripe_subscription_id_key'),
+        JSON.stringify(dupSub),
+      ).toBe(true)
+    }))
+
+  it("subscriptions: status is Stripe's eight statuses verbatim; seats >= 1", () =>
+    actAs(SUPERUSER, async (s) => {
+      const st = (v: string) =>
+        s.attempt(`update themis.subscriptions set status = $1 where id = $2`, [v, SUB.A])
+      for (const v of [
+        'trialing',
+        'active',
+        'incomplete',
+        'incomplete_expired',
+        'past_due',
+        'canceled',
+        'unpaid',
+        'paused',
+      ])
+        expect(await st(v), v).toEqual(OK)
+      for (const v of ['cancelled', 'expired', 'Active', ''])
+        expect(checkRefused(await st(v), 'subscriptions_status_check'), v).toBe(true)
+      const seats = await s.attempt(`update themis.subscriptions set seats = 0 where id = $1`, [
+        SUB.A,
+      ])
+      expect(checkRefused(seats, 'subscriptions_seats_check'), JSON.stringify(seats)).toBe(true)
+    }))
+
+  it('usage_monthly: month must be the first of the month; one row per (workspace, month)', () =>
+    actAs(SUPERUSER, async (s) => {
+      const ins = (ws: string, m: string) =>
+        s.attempt(`insert into themis.usage_monthly (workspace_id, month) values ($1, $2)`, [ws, m])
+      for (const m of ['2026-10-15', '2026-10-31', '2026-10-02'])
+        expect(checkRefused(await ins(WA, m), 'usage_monthly_month_check'), m).toBe(true)
+      expect(await ins(WA, '2026-10-01')).toEqual(OK)
+      const dup = await ins(WA, MONTH)
+      expect(dupRefused(dup, 'usage_monthly_pkey'), JSON.stringify(dup)).toBe(true)
+      // The same month in another workspace is a different key.
+      expect(await ins(WB, '2026-10-01')).toEqual(OK)
+      const [r] = await s.rows(
+        `select ai_runs, ai_cost_eur::text as cost from themis.usage_monthly where workspace_id = $1 and month = '2026-10-01'`,
+        [WA],
+      )
+      expect(r).toEqual({ ai_runs: 0, cost: '0.0000' })
+      for (const set of ['ai_runs = -1', 'ai_cost_eur = -0.0001']) {
+        const o = await s.attempt(
+          `update themis.usage_monthly set ${set} where workspace_id = $1`,
+          [WA],
+        )
+        expect(checkRefused(o), `${set}: ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+
+  it('audit_log: entity and action are 1..64 chars', () =>
+    actAs(SUPERUSER, async (s) => {
+      const ins = (entity: string, action: string) =>
+        s.attempt(
+          `insert into themis.audit_log (workspace_id, entity, action) values ($1, $2, $3)`,
+          [WA, entity, action],
+        )
+      expect(checkRefused(await ins('', 'insert'), 'audit_log_entity_check')).toBe(true)
+      expect(checkRefused(await ins('decision', ''), 'audit_log_action_check')).toBe(true)
+      expect(checkRefused(await ins('x'.repeat(65), 'insert'), 'audit_log_entity_check')).toBe(true)
+      expect(await ins('x'.repeat(64), 'y'.repeat(64))).toEqual(OK)
+    }))
+})
+
+describe('AI/billing/audit (P1.7): updated_at and cascades', () => {
+  it.each([
+    ['ai_runs', `status = 'failed'`, `id = '${AR.A}'`],
+    ['subscriptions', `seats = 2`, `id = '${SUB.A}'`],
+    ['usage_monthly', `ai_runs = 3`, `workspace_id = '${WA}'`],
+  ])('an UPDATE on themis.%s bumps updated_at', (t, set, where) =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await s.count(t, `${where} and updated_at = '${OLD}'`)).toBe(1)
+      await s.rows(`update themis.${t} set ${set} where ${where}`)
+      expect(
+        await s.count(t, `${where} and updated_at > '${OLD}'::timestamptz + interval '1 day'`),
+      ).toBe(1)
+    }),
+  )
+
+  it('an UPDATE on themis.plans bumps updated_at', () =>
+    actAs(SUPERUSER, async (s) => {
+      const [before] = await s.rows<{ u: string }>(
+        `select updated_at::text as u from themis.plans where key = 'free'`,
+      )
+      await s.rows(`update themis.plans set members_max = 2 where key = 'free'`)
+      expect(
+        await s.count('plans', `key = 'free' and updated_at > '${before.u}'::timestamptz`),
+      ).toBe(1)
+    }))
+
+  it("the owner deleting workspace A removes A's runs, subscription, usage and audit rows; B intact", () =>
+    actAs(U.ownerA, async (s) => {
+      expect(await s.attempt(`delete from themis.workspaces where id = $1`, [WA])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        for (const t of BILLING_TABLES) {
+          expect(await s.count(t, `workspace_id = '${WA}'`), t).toBe(0)
+          expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
+        }
+        expect(await s.count('plans')).toBe(3)
+      })
+    }))
+
+  it("deleting a draft decision removes its ai_runs only (not the other decision's, not billing or audit)", () =>
+    actAs(U.editorA, async (s) => {
+      expect(await s.attempt(`delete from themis.decisions where id = $1`, [D.A])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        expect(await s.count('ai_runs', `id = '${AR.A}'`)).toBe(0)
+        expect(await s.count('ai_runs', `id in ('${AR.AF}', '${AR.B}')`)).toBe(2)
+        expect(await s.count('subscriptions', `workspace_id = '${WA}'`)).toBe(1)
+        expect(await s.count('usage_monthly', `workspace_id = '${WA}'`)).toBe(1)
+        expect(await s.count('audit_log', `workspace_id = '${WA}'`)).toBe(2)
+      })
+    }))
+
+  it('deleting an auth user nulls ai_runs.created_by, keeping the run', () =>
+    actAs(SUPERUSER, async (s) => {
+      await s.rows(`delete from auth.users where id = $1`, [U.editorA])
+      expect(await s.count('ai_runs', `id = '${AR.A}' and created_by is null`)).toBe(1)
+    }))
+
+  // BUG (P1.7, reported to the lead): audit_log.actor is `on delete set null`, but the FK's SET NULL
+  // is an UPDATE of audit_log, which the BEFORE UPDATE append-only trigger refuses. So deleting ANY
+  // auth user who ever acted in a Themis audit row fails with `audit_log_append_only` — account
+  // deletion (spec §7.6) is blocked, and so is a user delete on Hephaestus's side of the shared
+  // auth.users. `it.fails` keeps the assertion intact and turns RED the moment the migration is
+  // fixed: then change it to `it`.
+  it.fails(
+    'BUG: deleting an auth user who is an audit actor keeps the audit row, actor nulled',
+    () =>
+      actAs(SUPERUSER, async (s) => {
+        const o = await s.attempt(`delete from auth.users where id = $1`, [U.viewerA])
+        expect(o, JSON.stringify(o)).toEqual({ ok: true, affected: 1 })
+        expect(await s.count('audit_log', `id = '${AU.A1}' and actor is null`)).toBe(1)
+      }),
+  )
 })

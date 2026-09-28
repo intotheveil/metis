@@ -394,3 +394,59 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
 - Next: test-writer for P1.7 (add ai_runs/subscriptions/usage_monthly/audit_log to `TENANT_TABLES`; server-only
   writes for every role, audit append-only, plans anon read + seed values, exact policy/grant sets scoped to the
   P1.7 tables), then P1.8.
+
+## 2026-09-28 — P1.7 tests: AI, billing, audit and plans (test-writer)
+
+- Did: extended `scripts/db-tenancy.test.ts` (same `actAs` harness, one PGlite). 100 new tests (327 → 427).
+  - Harness: a `SERVICE` identity (`set local role service_role`, no JWT sub) next to `ANON`/`SUPERUSER`.
+  - Fixture: ai_runs ARA (DA), ARAF (DAF), ARB; a Pro subscription for A and a free one for B; usage 2026-09 for both;
+    audit rows A1 (actor = viewer), A2 (no actor), B1. No audit row names ownerA/adminA/editorA, because the P1.4–P1.6
+    user-deletion tests delete them and would hit the bug below.
+  - `TENANT_TABLES` += ai_runs, subscriptions, usage_monthly, audit_log (B reads 0 of A; B's UPDATE/DELETE has no effect).
+  - Structure: columns/types/NOT NULLs of all five; exact PK/unique set; exact FK set (composite ai_runs →
+    decisions, plan → plans(key) no action); exact trigger set (4 × touch_updated_at, audit_log_no_update BEFORE UPDATE
+    ROW); audit_log_append_only() search_path pinned, no anon/authenticated EXECUTE; the plans comment says UNCONFIRMED.
+  - RLS/grants: RLS on all five; exact policy set (one SELECT policy each, plans `{anon,authenticated}`, no WITH
+    CHECK); predicates is_member / has_role(owner, admin) / true; exact privileges per role (anon SELECT plans only;
+    authenticated SELECT only; service_role SELECT plans, full DML on the three billing tables, SELECT+INSERT
+    audit_log); exact grantee sets; anon holds exactly `plans SELECT` across every themis table, sequence and function.
+  - Server-side writes only: owner/admin/editor/viewer × {ai_runs, subscriptions, usage_monthly, audit_log, plans} ×
+    INSERT/UPDATE/DELETE, each refused with permission denied and the rows unchanged; the same for anon. service_role
+    inserts/settles/deletes ai_runs, writes subscriptions and usage, INSERTs audit_log, is refused UPDATE/DELETE on
+    audit_log and any write to plans. The superuser's UPDATE on audit_log raises `audit_log_append_only`.
+  - Reads: each A role reads A's runs, subscription and usage and nothing of B; audit_log owner/admin 2 rows,
+    editor/viewer 0 (even the viewer's own actor row); B reads its own; the loner reads nothing but 3 plans; anon reads
+    3 plans and is refused on the four tenant tables.
+  - Seed: exactly the 3 proposal rows (as superuser and as anon). Re-applying the P1.7 file keeps a changed `pro`
+    row, does not duplicate, and restores a deleted `team`. plans_one_quota_basis (both / neither refused), key, min_seats,
+    ceiling, members_max, ai_runs_month checks.
+  - Constraints: ai_runs kind (5) / status (3, default reserved) / accepted array on insert and update / input_snapshot
+    object / non-negative tokens and cost / model length; the composite FK refuses cross-workspace runs and a re-point
+    FROM THE SERVICE KEY (the only barrier once RLS is bypassed). subscriptions one per workspace, plan FK (plan
+    'gold' refused, default free, an in-use plan cannot be deleted), cus_/sub_ formats and cross-workspace uniqueness,
+    Stripe's 8 statuses, seats >= 1. usage_monthly day-1 month, PK (workspace_id, month), non-negative counters.
+    audit_log entity/action 1..64.
+  - updated_at bumps on ai_runs, subscriptions, usage_monthly, plans. Cascades: workspace delete removes all four
+    tenant tables' A rows (B intact, plans intact); a draft decision delete removes only its runs; a user delete nulls
+    ai_runs.created_by.
+- BUG FOUND (P1.7 migration, not fixed here, product code untouched): `audit_log.actor ... on delete set null` is
+  an UPDATE of audit_log, and the BEFORE UPDATE `audit_log_no_update` trigger refuses it. Deleting ANY auth user who
+  is an actor in any audit row fails with `audit_log_append_only`. That blocks account deletion (spec §7.6) and a user
+  delete on Hephaestus's side of the shared auth.users. Recorded as `it.fails('BUG: deleting an auth user who is an
+  audit actor keeps the audit row, actor nulled')`: the assertion is intact, and the test goes RED as soon as the
+  migration is fixed (then flip it to `it`). Mutation m2 (trigger removed) made this test pass, which shows the trigger
+  is the cause. Suggested fix (builder, NEW migration): let the trigger allow an UPDATE that only nulls `actor`, or
+  make the actor FK `on delete no action` and handle deletion another way.
+- Mutation evidence (mutated COPIES in the scratchpad via DB_GATE_MIGRATIONS, deleted afterwards):
+  - m1 insert policy + grant on ai_runs for authenticated: 7 RED (the policy set, the predicates, the privileges, and
+    owner/admin/editor/viewer "refused INSERT, UPDATE and DELETE on A's themis.ai_runs").
+  - m2 no audit_log_no_update trigger: 3 RED (the trigger set, "UPDATE raises audit_log_append_only", and the BUG
+    it.fails, which now passes).
+  - m3 audit_log_select opened to is_member: 4 RED (the predicates, editor/viewer read 0 audit rows, the viewer's own row).
+  - m4 grant UPDATE, DELETE on audit_log to service_role: 2 RED (the privileges, and "service_role may INSERT
+    audit_log but never UPDATE or DELETE it").
+  - m5 seed `on conflict do update`: 1 RED ("re-applying the migration neither duplicates nor overwrites").
+  - `git diff supabase/` is empty.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exit 0; 426 passed +
+  1 expected fail (the bug). No live Supabase; not pushed.
+- Next: builder fixes the audit actor bug in a NEW migration and flips the it.fails; then P1.8.
