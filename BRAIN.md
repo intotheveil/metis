@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.5) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -71,6 +71,16 @@ call".
   twice). Harness: `actAs(uid | ANON | SUPERUSER, s => …)` runs in an always-rolled-back transaction,
   and `s.attempt` is savepoint-wrapped. The table-driven A/B isolation matrix is `TENANT_TABLES`, and
   each new tenant table is appended there. `DB_GATE_MIGRATIONS` points it at a mutated archive copy.
+  Its P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 `TABLES`. Scope
+  each later exact-set assertion to its own tables in the same way.
+  **Decision core (P1.5):** `20260928220000_themis_decisions.sql` adds `decisions` (lineage_id,
+  revision, question, methodology, scale, status, frozen, approved_by/at; `unique(id, workspace_id)`,
+  `unique(lineage_id, revision)`), `options` and `criteria` (weight smallint 0–5, `position`), and `scores`
+  (value 1–5, pk (option_id, criterion_id)). Each child has its own `workspace_id` and a composite
+  FK `(decision_id, workspace_id)`, and scores also pin option and criterion to the same decision.
+  Members read, and editor+ write. A frozen decision cannot be updated or deleted (RLS). The client
+  cannot write the lifecycle columns, ids, tenancy keys or `created_by` (column grants), because
+  those change only through the P4.2 RPCs. The DB stores inputs only.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -90,7 +100,10 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   by `db:gate` (covered by `scripts/check-migrations.test.ts`, 39 tests, typechecked via `tsconfig.scripts.json`).
   P1.4 done: tenancy migration (profiles, workspaces, memberships, invites + RLS helpers), local only,
   covered by `scripts/db-tenancy.test.ts` (82 tests; suite total 138).
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.5 (decision core).
+  P1.5 done (builder): the decision-core migration (decisions, options, criteria, scores), local
+  only. The enum-match test is in `db-tenancy.test.ts` (suite total 140). Isolation coverage for these
+  tables is still pending from the test-writer.
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.5 tests, then P1.6 (analysis).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -127,6 +140,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   memberships RLS ends in `ERRORDATA_STACK_SIZE exceeded`, and every later query on that instance
   returns empty or fails. With one PGlite per test file, one such bug turns dozens of unrelated tests
   RED. The FIRST failure is the real signal. Found in the P1.4 tests.
+- **An exact-set catalog assertion over the whole `themis` schema breaks on the NEXT migration.**
+  P1.4's FK, policy and grant lists went RED the moment P1.5 added tables. Scope every such
+  assertion to the tables of its own task. Found in P1.5.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -147,6 +163,18 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.5) — decision core migration
+
+- Did: `supabase/migrations/20260928220000_themis_decisions.sql` (see §2). Three P1.4 exact-set tests are
+  scoped to the P1.4 tables so that new tables do not break them. Added the enum-match test (the CHECK values
+  equal the keys of `METHODOLOGIES`/`SCALES`), which was proven RED by a mutation. A scratch PGlite script ran
+  50 behavioural checks, all PASS, and was not committed. lint, typecheck, 140 tests, db:check and db:gate
+  (3 files, applied twice) are green. Nothing was applied live, and nothing was pushed.
+- Decided: lifecycle columns are RPC-only (P4.2), frozen is enforced by RLS on `decisions`, scores pin both
+  ends to one decision, and `position` is added (DECISIONS.md P1.5).
+- Left off: the P1.5 test-writer appends the four tables to `TENANT_TABLES` and adds role gating,
+  composite-FK and column-grant tests. Then P1.6. P1.8 moves the enum check into db-gate.mjs.
 
 ### 2026-09-28 (P1.4 tests) — `scripts/db-tenancy.test.ts`
 
@@ -256,6 +284,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** shared Supabase `lss-platform`, schema `themis` only, own `themis.schema_migrations`, Management-API applier, never `db push` (DECISIONS.md ADR-0002; supersedes ADR-0001's no-Supabase clause).
 - **2026-09-28:** `db:gate` applies the archive twice (idempotency proof); `themis` revokes default EXECUTE from PUBLIC (DECISIONS.md, P1.2).
 - **2026-09-28:** tenancy writes (memberships, invites, new workspaces) are RPC-only; RLS reads membership only via SECURITY DEFINER helpers (DECISIONS.md P1.4).
+- **2026-09-28:** decision lifecycle columns (status, frozen, approved_*, lineage/revision) are not client-writable; only the P4.2 RPCs change them. A frozen decision cannot be updated or deleted (DECISIONS.md P1.5).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

@@ -163,3 +163,43 @@ themis` with/without `for role` GREEN), target-outside-themis (unqualified creat
   138 tests / 4 files green in about 2.1 s (the new file is about 1.7 s), db:check PASS, db:gate
   GATE PASSED. `git diff supabase/` is empty. No live project touched, not pushed.
 - Next: P1.5 (decision core). Its test-writer should extend `TENANT_TABLES` in this file.
+
+## 2026-09-28 — P1.5 decision core migration
+
+- Did: migration added, `supabase/migrations/20260928220000_themis_decisions.sql`. It creates
+  `themis.decisions` (lineage_id, revision ≥ 1, question, methodology, scale, status, frozen,
+  approved_by/at, created_by, timestamps; `unique(id, workspace_id)`, `unique(lineage_id, revision)`,
+  frozen ⇒ approved_at, approved ⇒ approved_at). It also creates `options` and `criteria` (weight
+  smallint 0–5, `position`), and `scores` (value smallint 1–5, pk (option_id, criterion_id)). Every
+  child has its own `workspace_id`, a composite FK `(decision_id, workspace_id)` → `decisions(id,
+workspace_id)` on delete cascade, `created_by` defaulted from `auth.uid()`, and `updated_at` via
+  `themis.touch_updated_at()`. Scores also have `(option_id, decision_id)` and `(criterion_id,
+decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes through
+  `is_member`/`has_role` only: members read, and editor|admin|owner write. On `decisions`, UPDATE and
+  DELETE also require `not frozen`. Grants are column-limited: the client never writes ids, tenancy
+  keys, `created_by` or the lifecycle columns (status, frozen, approved_*, lineage_id, revision). anon
+  gets nothing, service_role gets full DML. No computed score is stored.
+- Also touched: `scripts/db-tenancy.test.ts` (sanctioned by the lead where needed).
+  - Three P1.4 exact-set assertions (FK list, policy set, authenticated column grants) queried
+    the whole `themis` schema and went RED once any table was added. They are now scoped to the
+    P1.4 `TABLES`, and their expected values are unchanged.
+  - Added the P1.5 criterion "the enums match `decision.ts`": the CHECK values on
+    `decisions.methodology`/`scale` are read from the catalog and compared to the keys of
+    `METHODOLOGIES`/`SCALES`. Mutation proof: removing `'yolo'` from the SQL in an archive copy
+    (`DB_GATE_MIGRATIONS`) turned it RED (1 failed).
+  - `TENANT_TABLES` was NOT extended. Isolation coverage for the four new tables is the test-writer's job.
+- Exercised: a scratch PGlite script (not committed) ran 50 checks, all PASS:
+  - B reads 0 of A's rows and B's deletes have no effect in all 4 tables; viewer reads but cannot write; anon is refused on all 4;
+  - an editor cannot set status, frozen, lineage/revision or created_by, and created_by defaults to the caller;
+  - the score upsert works, weight 6 and score 0 are refused, and weight 0 is allowed;
+  - B's child row with ws=B pointing at A's decision is refused by the composite FK, and with ws=A it is refused by RLS;
+  - a score that mixes two decisions is refused;
+  - a frozen decision cannot be updated or deleted, and frozen without approval is refused;
+  - updated_at is bumped, and deletes cascade.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exits 0.
+  140 tests pass. The gate applies and re-applies all 3 files. Nothing was applied live, and nothing was pushed.
+- Not done here (by plan): the frozen triggers on child tables and the lifecycle RPCs are P4.2. The db-gate.mjs
+  enum/structural sweep is P1.8. The criterion says "the gate asserts" the enum match, but db-gate.mjs
+  is outside P1.5's files, so the assertion lives in the Vitest harness until P1.8 adds the gate line.
+- Next: test-writer for P1.5 (append decisions/options/criteria/scores to `TENANT_TABLES`, plus role gating,
+  the composite-FK cross-tenant insert and column grants), then P1.6.

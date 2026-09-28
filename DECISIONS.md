@@ -133,3 +133,29 @@ workspaces` resolves through the search_path and would land in Hephaestus's `pub
   SVG is refused because it can carry script.
 - **`create or replace trigger`** (PG14+) keeps the triggers idempotent without a DROP.
 - **memberships' unique(workspace_id, user_id) is its primary key.**
+
+## 2026-09-28 — P1.5 decision core choices
+
+- **Lifecycle columns are not client-writable.** authenticated may INSERT (workspace_id, question,
+  methodology, scale) and UPDATE (question, methodology, scale) on `decisions`. Status, frozen,
+  approved_by/at, lineage_id and revision change only through the P4.2 SECURITY DEFINER RPCs.
+  Without this an editor could self-approve, unfreeze, or insert `(someone's lineage_id, n)`
+  and block another workspace's next revision through the global `unique(lineage_id, revision)`.
+- **Frozen is enforced by RLS on `decisions` now** (`not frozen` in UPDATE/DELETE) and by CHECKs:
+  frozen requires approved_at, and approved requires approved_at. The child-table `decision_frozen`
+  triggers stay in P4.2 as planned. Until then nothing client-side can set `frozen`.
+- **Scores pin both ends to one decision.** Besides the planned `(decision_id, workspace_id)` FK,
+  scores have `(option_id, decision_id)` → `options(id, decision_id)` and `(criterion_id,
+decision_id)` → `criteria(id, decision_id)`. The PK is `(option_id, criterion_id)`, one row per cell,
+  and it is the upsert target. An unscored cell has no row, which is what `decision.ts` expects.
+- **Children have no direct FK to `workspaces`.** The composite FK to `decisions` carries tenancy,
+  and cascades come through it.
+- **`position smallint` on options and criteria.** Rows created in one statement share
+  `created_at`, so order would otherwise be lost. The spec does not require it. It is a display
+  input, never math.
+- **`question` may be empty (≤ 1000 chars), and option and criterion names may be empty (≤ 200).** A draft
+  is saved before it is written (P0 import, debounced saves).
+- **Weights and scores are `smallint`,** matching the integer inputs of the UI range and score
+  controls. The DB stores inputs only, never a computed score.
+- **The enum-match assertion lives in `scripts/db-tenancy.test.ts`** until P1.8 adds it to db-gate.mjs,
+  which is outside P1.5's files.

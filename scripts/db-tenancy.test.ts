@@ -1,6 +1,9 @@
 // @vitest-environment node
 //
 // P1.4 — tenancy contract: themis.profiles, workspaces, memberships, invites.
+// P1.5 — the decisions enums match src/lib/decision.ts (the rest of P1.5 is the test-writer's).
+// The P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 TABLES, so
+// a later migration's tables extend the schema without rewriting P1.4's contract.
 //
 // Runs the REAL committed archive (supabase/migrations, applied twice like `npm run db:gate`)
 // against real Postgres (PGlite) dressed as Hephaestus's shared project by ./db-gate/shim.mjs.
@@ -23,6 +26,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { HEPHAESTUS_MIGRATION_ROWS, installShim } from './db-gate/shim.mjs'
+import { METHODOLOGIES, SCALES } from '../src/lib/decision'
 
 const MIG =
   process.env.DB_GATE_MIGRATIONS ??
@@ -294,7 +298,9 @@ describe('table shapes', () => {
          from pg_constraint c
          join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
         where c.contype = 'f' and c.connamespace = 'themis'::regnamespace
+          and c.conrelid::regclass::text = any ($1::text[])
         order by 1`,
+      [TABLES.map((t) => `themis.${t}`)],
     )
     // c = cascade, n = set null
     expect(fks.rows.map((r) => r.fk)).toEqual([
@@ -483,7 +489,9 @@ describe('RLS, policies and grants', () => {
     const r = await db.query<{ p: string }>(
       `select c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' || p.polroles::regrole[]::text as p
          from pg_policy p join pg_class c on c.oid = p.polrelid
-        where c.relnamespace = 'themis'::regnamespace order by 1`,
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])
+        order by 1`,
+      [[...TABLES]],
     )
     // polcmd: r select, a insert, w update, d delete, * all
     expect(r.rows.map((x) => x.p)).toEqual([
@@ -558,8 +566,9 @@ describe('RLS, policies and grants', () => {
       `select table_name || '.' || column_name || ' ' || privilege_type as c
          from information_schema.column_privileges
         where table_schema = 'themis' and grantee = 'authenticated'
-          and privilege_type in ('INSERT', 'UPDATE')
+          and privilege_type in ('INSERT', 'UPDATE') and table_name = any ($1::text[])
         order by 1`,
+      [[...TABLES]],
     )
     expect(cols.rows.map((r) => r.c)).toEqual([
       'profiles.display_name INSERT',
@@ -884,5 +893,29 @@ describe("Hephaestus's side of the shared project is untouched", () => {
           and n.nspname not like 'pg_temp_%' and n.nspname not like 'pg_toast_temp_%'`,
     )
     expect(r.rows).toEqual([])
+  })
+})
+
+describe('decision core (P1.5): the DB enums match src/lib/decision.ts exactly', () => {
+  // The allowed values of a CHECK (col in (...)) constraint on themis.decisions, read back from
+  // the catalog, so a value added on only one side (TS or SQL) turns this RED.
+  const allowed = async (col: string) => {
+    const r = await db.query<{ def: string }>(
+      `select pg_get_constraintdef(c.oid) as def
+         from pg_constraint c
+         join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
+        where c.conrelid = 'themis.decisions'::regclass and c.contype = 'c'
+          and a.attname = $1 and cardinality(c.conkey) = 1`,
+      [col],
+    )
+    expect(r.rows, `one single-column CHECK on decisions.${col}`).toHaveLength(1)
+    return [...r.rows[0].def.matchAll(/'([^']*)'::text/g)].map((m) => m[1]).sort()
+  }
+
+  it.each([
+    ['methodology', Object.keys(METHODOLOGIES)],
+    ['scale', Object.keys(SCALES)],
+  ])('decisions.%s allows exactly the decision.ts values', async (col, ts) => {
+    expect(await allowed(col)).toEqual([...ts].sort())
   })
 })
