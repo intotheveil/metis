@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   verify:
-    name: Lint + typecheck + tests + db gates + build
+    name: Lint + typecheck + tests + db gates + build + bundle scan
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -40,6 +40,11 @@ jobs:
           PROVE_RED_JOBS: '4'
         timeout-minutes: 10
       - run: npm run build
+      # Secret boundary (PLAN P2.1): every byte in dist/ is public. Scan the real build output for
+      # secret-looking values (sk_live_/sk_test_/whsec_/sk-ant-/service_role, a service-role JWT) and
+      # server-only env names. A finding fails `verify`, so it never reaches the Pages artifact.
+      - name: Bundle secret scan (check:bundle)
+        run: npm run check:bundle
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:

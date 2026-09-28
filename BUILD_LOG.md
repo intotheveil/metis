@@ -874,3 +874,52 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
    is a local commit. The recommendation is to push it and apply from a commit whose CI run is green.
 
 **The crew waits here. P1.14 does not start without the operator's go.**
+
+## 2026-09-28 — P2.1 secret boundary: lint rule and bundle scan (`npm run check:bundle`)
+
+Dispatched by the lead while CHECKPOINT P1-LIVE is still open. PLAN lists "P1 claimed" as a dependency, but P2.1 touches
+no schema and no live service, so it runs in parallel with the checkpoint. Nothing live, nothing pushed.
+
+**Files:** `eslint.config.js`, `scripts/check-bundle-secrets.mjs` (NEW), `package.json` (script `check:bundle`),
+`.github/workflows/deploy.yml` (a `check:bundle` step right after `build`, before the Pages artifact upload).
+
+**Lint rule** (`no-restricted-syntax`, files `src/**/*.{ts,tsx,js,jsx,mjs,cjs}`, so `supabase/functions/**`,
+`scripts/**` and `e2e/**` are outside it). It errors on reads of
+`/^(THEMIS_)?(ANTHROPIC_API_KEY|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET)$|^SUPABASE_SERVICE_ROLE_KEY$|^SUPABASE_ACCESS_TOKEN$/`
+and of any `VITE_*` name outside the allow-list (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
+`VITE_STRIPE_PUBLISHABLE_KEY`, `VITE_FLEET_*`). It covers `import.meta.env.X`, `process.env.X`, the bracket forms
+`['X']`, and destructuring `const { X } = import.meta.env`. Vite built-ins (`BASE_URL`, `MODE`, ...) are unaffected.
+
+**Bundle scan** (`npm run check:bundle` = `node scripts/check-bundle-secrets.mjs [dir]`, default `dist/`). It reads
+every file in the dir and fails (exit 1) on: `sk_live_`, `sk_test_`, `rk_live_`, `rk_test_`, `whsec_`, `sk-ant-`,
+`sb_secret_`, `sbp_`, the literal `service_role`, a JWT whose decoded payload has `"role":"service_role"`, and any
+server-only env name (bare or `THEMIS_`). Values print masked. A missing or empty dir exits 2, so a scan of nothing
+cannot pass. `pk_live_`/`pk_test_` and an anon JWT are not findings.
+
+**RED evidence (all fixtures removed afterwards; `git status` shows only the 4 scoped files):**
+- Lint: a fixture `src/secret-fixture.ts` with 17 violations (all 8 names via `import.meta.env`, 2 via `process.env`,
+  2 bracket reads, 1 destructure, 4 `VITE_*` outside the list) and 7 allowed reads (`VITE_SUPABASE_URL`,
+  `VITE_SUPABASE_ANON_KEY`, `VITE_STRIPE_PUBLISHABLE_KEY`, `VITE_FLEET_TELEMETRY_URL`, `BASE_URL`, `MODE`,
+  `THEMIS_ANTHROPIC_API_KEY_HINT`). `npm run lint` gave **17 errors, exit 1**, exactly lines 3–19; the 7 allowed lines
+  were clean. The same file copied into `scripts/`, `supabase/functions/themis-fixture/` and `e2e/` gave no error.
+- Scan on a REAL build: `src/main.tsx` temporarily logged three ALLOWED names (so lint stayed clean), and the build
+  ran with fake values: `VITE_STRIPE_PUBLISHABLE_KEY=sk_live_FAKE...`, `VITE_SUPABASE_ANON_KEY=<locally minted
+  unsigned JWT with role service_role>`, `VITE_FLEET_NOTE=THEMIS_ANTHROPIC_API_KEY`. `npm run check:bundle` gave
+  **3 findings (secret-value, service-jwt, forbidden-name), exit 1**. `main.tsx` was restored and rebuilt → OK.
+- Per-rule: a string injected into `dist/assets/` exits 1 for each of `sk_test_`, `whsec_`, `sk-ant-`,
+  `"service_role"`, `sb_secret_`, `sbp_`, `rk_live_`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN` and
+  `STRIPE_WEBHOOK_SECRET`; it exits 0 for `pk_live_`, `pk_test_`, `task_test_` and `VITE_SUPABASE_ANON_KEY`. A missing dir
+  and an empty dir each exit 2.
+
+**Green:** `npm run lint && npm run typecheck && npm test` (551) `&& npm run db:check && npm run db:gate && npm run build
+&& npm run check:bundle` → all pass (the scan covers 10 files, 593,703 bytes).
+
+**Notable:** the argus-news reference selector `MemberExpression[object.type='MetaProperty'] > Identifier[...]` never
+matches `import.meta.env.X`. The outer MemberExpression's object is another MemberExpression (`import.meta.env`), not
+the MetaProperty. Proven with the ESLint Linter API: only its `process.env` form fired. The Themis rule matches on
+`object.object.type='MetaProperty'` and `object.property.name='env'`. argus-news is out of scope here; this is
+reported to the lead.
+
+**CI:** the workflow edit needs the gh `workflow` scope to push (BRAIN §5). The step is untested on Actions until then.
+
+**Next:** test-writer (unit tests for `scanText`/`scanDir`, and a lint-rule test through the ESLint API), then P2.2/P2.3.

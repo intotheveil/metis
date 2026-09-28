@@ -323,3 +323,17 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   pre/post Data API probes and an operator sign-in, each compared with a pre baseline.
 - **The current exposed-schema value is recorded at P1.14 step 2, not in the runbook.** Reading it is live contact,
   which P1.13 forbids.
+
+## 2026-09-28 — P2.1: secret boundary — a selector that actually matches, a scan that decodes JWTs
+
+- **The lint selector differs from argus-news on purpose.** argus-news's
+  `MemberExpression[object.type='MetaProperty'] > Identifier` never matches `import.meta.env.X`, because the
+  MetaProperty sits two levels down. Themis matches on `[object.object.type='MetaProperty'][object.property.name='env']`
+  and also covers the bracket and destructuring forms. The fixture proves every form RED.
+- **The rule's `files` is `src/**` only (all JS/TS extensions), not "everything minus exclusions".** That is how
+  `supabase/functions/**`, `scripts/**` and `e2e/**` stay outside it, and any future browser code must live in `src/`.
+- **The scan decodes JWTs.** A service-role key is a JWT, and base64 hides the literal `service_role`, so the plain
+  grep from the PLAN would miss the one key that bypasses RLS. It also flags `rk_*`, `sb_secret_` and `sbp_` (Stripe
+  restricted keys, Supabase secret keys and Supabase PATs), and the server-only env NAMES, beyond the PLAN's list.
+- **Nothing to scan is a failure (exit 2), not a pass.** `check:bundle` does not build. It scans whatever `dist/`
+  holds, so CI runs it right after `build` and before the artifact upload.

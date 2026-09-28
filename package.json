@@ -16,7 +16,8 @@
     "db:gate:prove-red": "node scripts/db-gate-prove-red.mjs",
     "db:apply": "node scripts/db-apply.mjs",
     "db:snapshot": "node scripts/db-snapshot.mjs",
-    "db:snapshot:diff": "node scripts/db-snapshot-diff.mjs"
+    "db:snapshot:diff": "node scripts/db-snapshot-diff.mjs",
+    "check:bundle": "node scripts/check-bundle-secrets.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.13 live-apply runbook + evidence pack; CHECKPOINT P1-LIVE open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P2.1 secret boundary: lint rule + `check:bundle`; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -200,6 +200,11 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   pack (§2). No live contact. **CHECKPOINT P1-LIVE is OPEN** (BUILD_LOG.md): the operator decides go/no-go, picks the
   transport (a short-lived PAT or the connector), and approves the reordered steps and the regression set. Nothing is
   applied live, and there is no `SUPABASE_ACCESS_TOKEN` on the desktop.
+  P2.1 done locally (builder; committed, NOT pushed; dispatched while P1-LIVE is still open because it touches no schema
+  or live service). This is the secret boundary. `eslint.config.js` errors when `src/**` reads a server-only name (bare
+  or `THEMIS_`) or a `VITE_*` name outside the constraint-6 allow-list. `npm run check:bundle`
+  (`scripts/check-bundle-secrets.mjs`) scans the built `dist/`, and CI runs it right after `build`. Both were proven
+  RED (BUILD_LOG P2.1). Test-writer coverage for P2.1 is still to come.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -310,12 +315,37 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **Headless Edge/Chrome screenshots at `--window-size=390` are not phone renders.** The window
   has a minimum width, so the page lays out wider and gets cropped. To check a real 390px layout,
   screenshot the page inside a `<iframe style="width:390px">`.
+- **The argus-news `import.meta.env` lint selector is a false negative; do not copy it.**
+  `MemberExpression[object.type='MetaProperty'] > Identifier[...]` never fires on `import.meta.env.X`, because the
+  MetaProperty is two levels down (`import.meta.env.X` = Member(Member(MetaProperty, env), X)). Only its
+  `process.env` twin works. Themis uses `[object.object.type='MetaProperty'][object.property.name='env']`. Found at
+  P2.1 (2026-09-28) with the ESLint Linter API. An ESLint rule nobody has seen fail is not a rule.
+- **`check:bundle` greps the literal `service_role` across ALL of `dist/`, dependencies included.** When P2.2 adds
+  `@supabase/supabase-js`, check that the library does not ship that string. If it does, narrow the rule to a
+  reviewed allow-list of locations. Never delete the rule. It also scans whatever `dist/` holds, so a stale build
+  gives a stale answer: always run it right after `npm run build`.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P2.1) — secret boundary: lint rule and bundle scan
+
+- Did: `eslint.config.js` now has a `no-restricted-syntax` rule on `src/**`. It covers the 8 server-only names (bare
+  and `THEMIS_`) and any `VITE_*` name outside the allow-list, in the forms `import.meta.env`, `process.env`, bracket
+  reads and destructuring. NEW `scripts/check-bundle-secrets.mjs` = `npm run check:bundle` scans `dist/` for
+  `sk_live_/sk_test_/rk_*/whsec_/sk-ant-/sb_secret_/sbp_`, `service_role`, a service-role JWT (decoded) and the
+  server-only names. It exits 1 on a finding and 2 on an empty or missing dir. The CI `verify` job runs it after
+  `build`. RED was proven with a 17-violation lint fixture, and with a real build carrying fake secret values in
+  ALLOWED vars (3 findings, exit 1). Fixtures removed. The full chain is green, and the scan is OK on 10 files.
+- Decided (DECISIONS.md P2.1): a selector that matches (not the argus one); the scan decodes JWTs; nothing to scan =
+  fail.
+- Found: §5 (the argus-news selector is a false negative; `service_role` vs supabase-js; stale `dist/`).
+- Left off: test-writer for P2.1 (`scanText`/`scanDir` are exported, and the lint rule can be tested through the
+  ESLint API). Pushing needs the `workflow` scope. CHECKPOINT P1-LIVE is still open. The argus-news selector bug is
+  reported to the lead (it is out of scope here).
 
 ### 2026-09-28 (P1.13) — live-apply runbook + pre-apply evidence pack; CHECKPOINT P1-LIVE open
 
