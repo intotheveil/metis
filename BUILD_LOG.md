@@ -1204,3 +1204,91 @@ the CI e2e step is not yet observed green on GitHub.
 - BRAIN F3 is resolved.
 
 **Next:** test-writer for P2.4 (e.g. unit tests for `resolveRequest` in pages-server and `missingLiveEnv`), then P2.5.
+
+## 2026-09-29 — P2.5 (builder): onboarding RPCs — migration written and verified, NOT committed (BLOCKED on scope)
+
+**Status: BLOCKED on two out-of-scope files. The migration is correct and gate-green. It sits UNTRACKED in the working
+tree, and nothing is committed, because `npm test` and `db:gate:prove-red` are red for reasons outside P2.5's one file.**
+
+**Built:** NEW `supabase/migrations/20260929000000_themis_onboarding.sql`, the only file in P2.5's scope.
+
+- `themis.bootstrap_me() returns uuid`: SECURITY DEFINER, `search_path = ''`, plpgsql. The caller is `auth.uid()` only,
+  and a null uid raises `not_authenticated` (28000). It takes an advisory xact lock in the two-int4 keyspace (class =
+  hashtext('themis.bootstrap_me'), key = hashtext(uid)), so two tabs serialize. It inserts `themis.profiles(user_id)`
+  `on conflict do nothing`. It then returns the oldest workspace the caller CREATED and still OWNS. If there is none, it
+  creates `workspaces('Personal', created_by = uid)` plus an `owner` membership and returns that id.
+- `themis.import_local_decision(ws uuid, payload jsonb) returns uuid`: SECURITY DEFINER, `search_path = ''`. It
+  requires `themis.has_role(ws, owner|admin|editor)`, else raises 42501 (this covers a foreign workspace, a viewer and
+  an unknown or null ws). The payload uses the decision.ts shapes: `client_import_id` (a required uuid string),
+  `question`, `methodology`, `scale`, `criteria[{id,name,weight}]`, `options[{id,name}]` and
+  `scores{optId:{critId:value}}`. Weights must be integral 0..5 and scores integral 1..5 (3.5 is refused, not
+  rounded). Client ids are 1..64-char strings, unique per list. A score naming an unknown id is refused. The limit is
+  100 criteria and 100 options. The enums and text lengths are left to the table CHECKs. One call inserts the whole
+  graph or raises and leaves nothing. Dedupe: a lock on (ws, client_import_id), then a lookup of the
+  `audit_log(entity 'decision', action 'import_local', after.client_import_id)` row whose decision still exists in
+  `ws`. The import writes exactly one such audit row.
+- EXECUTE is revoked from public, anon and service_role explicitly (B2) and granted to authenticated only.
+
+**Verified (all on PGlite, no live contact):**
+
+- `npm run lint` ✔ · `npm run typecheck` ✔ · `npm run db:check` ✔ (7 files) · `npm run db:gate` ✔ GATE PASSED, 291 PASS
+  (the archive applies twice, so the functions are idempotent).
+- Scratch probe (the gate shim + the real archive + `seedFixture`; not committed): **70/70 PASS**. bootstrap_me twice
+  gives one profile and one workspace (same id), an owner membership, created_by = caller, and RLS shows the new
+  workspace. An invited-only viewer gets their own workspace and keeps viewer in A. anon and service_role cannot
+  execute it, and no sub gives not_authenticated. For import: editor imports, a repeat by the same or another editor+
+  returns the same id with nothing new, fields/positions/scores are mapped, there is one audit row with actor =
+  caller, and a viewer reads the import through RLS. UB→A, UA→B, viewer, anon, service_role, an unknown ws and a null ws
+  are all refused, and B is unchanged. The same key in B makes a separate decision (the key is per workspace). 28
+  bad payloads are refused, and a before/after count of decisions/options/criteria/scores/audit_log is identical
+  (atomic). A minimal payload and `scores: null` are accepted, an upper-case uuid dedupes, and a deleted import
+  re-imports. Catalogue: both functions are prosecdef, `search_path=""`, and acl `{postgres=X, authenticated=X}`.
+- Gate coverage is catalogue-derived, so no gate edit is needed. On temp archive copies: dropping the import revoke →
+  `FAIL anon has EXECUTE…` + `FAIL PUBLIC has EXECUTE…` (GATE FAILED); `search_path = public` → the guard's
+  `[forbidden-schema]` (MIGRATION GUARD FAILED). No new gate check was added, so no new prove-red sabotage is needed.
+
+**BLOCKER 1: `scripts/db-apply.test.ts` hard-codes the size of the REAL archive (P1.11).** 6 tests go red with ANY 7th
+migration: `'6 migration(s)'`, `'DRY-RUN PASSED — 6 pending'`, `toHaveLength(5)` batches (×3), `'APPLY PASSED — 6
+file(s)'`, `'PLAN  3 pending file(s) in 2 transaction(s)'` with an explicit sent-list, and `'3 later file(s) not
+attempted'`. npm test: 722/728. Proposed fix (test-writer, scope `scripts/db-apply.test.ts`): derive the counts from
+`loadMigrations(ARCHIVE)` and `plan()`, or pin those tests to a frozen copy of the first 6 files. Every later migration
+(P2.6, P3.2, P4.2, P4.9) will hit the same wall.
+
+**BLOCKER 2: `db:gate:prove-red` 33/34. The `apply-error` sabotage crashes node on THIS Windows desktop** (exit
+3221226505 = 0xC0000409, `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c`, the BRAIN §5
+libuv gotcha), instead of exiting 1. It is deterministic (4/4 with the new file, 4/4 RED without it). Bisected: it is
+NOT a SQL problem. The gate prints the right `FAIL apply …` and `APPLY FAILED` lines, then crashes inside
+`db-gate.mjs`'s immediate `process.exit(1)` after PGlite work. A trivial function, a 12 KB function body and each
+construct of import_local_decision in isolation all exit 1 cleanly; only the full import function triggers it, so it
+is timing- or heap-dependent. Deferring the exit makes it exit 1. Proposed fix (scope `scripts/db-gate.mjs`): on the
+APPLY FAILED / guard-failed / no-migrations paths, `await db.close()` and set `process.exitCode = 1` instead of
+`process.exit(1)`, as §5 already prescribes for db:snapshot. CI (Linux) is probably unaffected, but that is unobserved.
+
+**Not done, by design:** no audit row in bootstrap_me (PLAN's audit list is P4.2: status, approvals, revisions, role
+changes); no schema change (the P1.4/P1.5 exact-set tests pin workspaces' FKs and decisions' columns/unique keys, so
+a `personal_of` or `client_import_id` column would turn them red, and those tests are out of scope too).
+
+**Next:** the lead authorizes (or dispatches) the two fixes above. Then re-run the full chain and commit P2.5 as
+`feat: onboarding RPCs bootstrap_me and import_local_decision (P2.5)`. P2.7 turns the scratch probe's cases into gate
+lines.
+
+## 2026-09-29 — B3 fixed (builder), P2.5 UNBLOCKED and committed
+
+**Status: P2.5 is unblocked and committed. B3 closed.** Lead-authorised scope: `scripts/db-apply.test.ts`,
+`scripts/db-gate.mjs`, then land P2.5 (the migration itself was NOT modified).
+
+- **`a05da98` fix(test):** db-apply tests about the real archive derive their counts from `loadMigrations(ARCHIVE)`
+  and `plan()`, and now also assert units = files − pairs and that dry-run batch k carries exactly units 1..k. The
+  partial-ledger and stop-at-first-failure tests run on `frozenP1Archive()` (a copy of the six P1 files), so their
+  exact "3 pending in 2 transactions" and "3 later file(s) not attempted" keep their meaning. db-gate: the body is
+  `runGate(db)` returning 0/1; `main()` handles the guard, closes PGlite in a `finally`; `process.exitCode` is set once.
+  No `process.exit()` remains (guard-failed, no-migrations, APPLY FAILED, fixture-failed, GATE FAILED all return 1).
+- **Evidence:** before the fix `--only apply-error` crashed (`UV_HANDLE_CLOSING`) 2/2; after it passed 4/4. Full
+  `db:gate:prove-red` 34/34 on 3 consecutive runs (~21 s each) with 7 migrations. A static-guard-red archive and an
+  empty archive dir both exit 1. db-apply tests: 35/35 with 7 files and with a temporary 8th probe migration (removed);
+  an applier mutation (summary counts off by one, reverted via git checkout) turned 3 tests red.
+- **Chain (P2.5 file present):** lint ✔ · typecheck ✔ · test 728/728 · db:check (7 migrations) ✔ · db:gate GATE PASSED ·
+  prove-red 34/34, control 291 PASS · build ✔ · check:bundle OK (11 files) · e2e 6/6. No live Supabase. Not pushed.
+- Then P2.5 committed as `feat: onboarding RPCs bootstrap_me and import_local_decision (P2.5)`.
+
+**Next:** P2.6; P2.7 turns the P2.5 scratch probe's cases into gate lines.

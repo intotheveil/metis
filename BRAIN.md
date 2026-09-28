@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-29 (P2.4 Playwright wiring: `npm run e2e` on the production build via a Pages-like server, 6/6; `e2e:live` skips without E2E_* env; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-29 (B3 closed by `a05da98`; P2.5 onboarding RPCs committed, full chain green; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -130,6 +130,15 @@ call".
   update through: `actor` non-null → NULL with every other column unchanged. That is the `actor → auth.users on delete
 set null` FK action, so deleting a user (Themis or Hephaestus) works. No role holds UPDATE on audit_log; the FK action
   runs as the table owner and needs no grant.
+  **Onboarding RPCs (P2.5, `20260929000000_themis_onboarding.sql`, committed locally, NOT pushed):**
+  `themis.bootstrap_me() → uuid` and `themis.import_local_decision(ws uuid, payload jsonb) → uuid`. Both are SECURITY
+  DEFINER plpgsql with `search_path=''`, the caller only from `auth.uid()`, EXECUTE for authenticated only (revoked from
+  public/anon/service_role), and serialized by `pg_advisory_xact_lock(int4,int4)`. bootstrap_me: the profile is
+  `on conflict do nothing`; the personal workspace = the oldest workspace the caller created AND owns, else it creates
+  'Personal' + an owner membership. import: editor+ in ws, else 42501; payload = decision.ts shapes + a required
+  `client_import_id` uuid; integral weight 0..5 / score 1..5; ≤100 criteria/options; atomic. **Its dedupe key is the
+  `audit_log` row `(entity 'decision', action 'import_local', after.client_import_id)`**, per workspace, valid while
+  that decision exists. Payload contract: the function header.
   **Live applier (P1.11):** `scripts/db-apply.mjs` (`npm run db:apply`, `-- --apply` to commit) over
   `scripts/lib/mgmt-api.mjs` (the only HTTP code: `POST https://api.supabase.com/v1/projects/{ref}/database/query`,
   body `{query}`, Bearer token; `fetch` injectable; every error has the token redacted; an error is a non-2xx status OR
@@ -249,6 +258,10 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
   with the query kept, and an unknown path, each status 404 + the rendered app); about 7 s locally. `npm run e2e:live`
   skips cleanly without E2E_* env. CI runs e2e after check:bundle; the push needs the gh `workflow` scope, and the CI
   e2e step has not been observed green yet. Five mutations went RED (BUILD_LOG P2.4). Next: test-writer for P2.4, then P2.5.
+  P2.5 done (builder; committed locally, NOT pushed): `bootstrap_me()` + `import_local_decision()` (§2), after B3's
+  fixes (`a05da98`: `db-apply.test.ts` counts derived from the archive / a frozen P1 copy; `db-gate.mjs` returns its
+  exit code and closes PGlite). Chain green with 7 migrations: 728 tests, GATE PASSED (291 PASS), prove-red 34/34
+  (3 consecutive runs), check:bundle OK, e2e 6/6. Next: test-writer for P2.5 is P2.7 (gate lines); then P2.6.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -256,16 +269,17 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
 
 ## 4. OUTSTANDING (the triage queue)
 
-| id  | sev | type       | summary                                                                                                                                                                                                                                                            | status                                                                                                                | added      |
-| --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------- |
-| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                | open                                                                                                                  | 2026-09-28 |
-| B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
-| S2  | 🟠  | checkpoint | CHECKPOINT P1-LIVE: go/no-go for the first live apply + exposing `themis` (`docs/ops/LIVE_APPLY.md`; the decisions list is in BUILD_LOG.md)                                                                                                                        | open                                                                                                                  | 2026-09-28 |
-| T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                               | open                                                                                                                  | 2026-09-28 |
-| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                     | open                                                                                                                  | 2026-09-28 |
-| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                          | open                                                                                                                  | 2026-09-28 |
-| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                       | closed 2026-09-29 (P2.4)                                                                                                                  | 2026-09-28 |
-| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                      | open                                                                                                                  | 2026-09-28 |
+| id  | sev | type       | summary                                                                                                                                                                                                                                                                                                                                                   | status                                                                                                                | added      |
+| --- | --- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------- |
+| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                                                                                                       | open                                                                                                                  | 2026-09-28 |
+| B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus                                                                                        | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
+| B3  | 🟠  | blocker    | P2.5 cannot commit. (1) `scripts/db-apply.test.ts` hard-codes the real archive size (6 files/5 units), so ANY new migration turns 6 tests red. (2) `scripts/db-gate.mjs` calls `process.exit(1)` on APPLY FAILED, which crashes node on Windows (0xC0000409) with the P2.5 archive, so prove-red `apply-error` is WRONG. Fixes proposed in BUILD_LOG P2.5 | closed 2026-09-29 (`a05da98`): counts derived / frozen P1 fixture; db-gate returns its exit code                                                                                                                  | 2026-09-29 |
+| S2  | 🟠  | checkpoint | CHECKPOINT P1-LIVE: go/no-go for the first live apply + exposing `themis` (`docs/ops/LIVE_APPLY.md`; the decisions list is in BUILD_LOG.md)                                                                                                                                                                                                               | open                                                                                                                  | 2026-09-28 |
+| T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                                                                                                                      | open                                                                                                                  | 2026-09-28 |
+| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                            | open                                                                                                                  | 2026-09-28 |
+| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                 | open                                                                                                                  | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                              | closed 2026-09-29 (P2.4)                                                                                              | 2026-09-28 |
+| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                                                                                                             | open                                                                                                                  | 2026-09-28 |
 
 ---
 
@@ -392,12 +406,49 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
   watchdog.** Found in P2.4.
 - **The P0 score picker toggles:** clicking the already-selected score clears it. A spec that scores a cell twice
   with the same value ends up UNscored. Found in P2.4.
+- **A test that runs against the REAL `supabase/migrations/` must not hard-code its size.** `db-apply.test.ts` (P1.11)
+  asserts "6 migration(s)", 5 batches and "3 later file(s)", so the first new migration (P2.5) turned 6 tests red in a
+  file outside the migration task's scope. Derive counts from `loadMigrations(ARCHIVE)`, or pin to a frozen copy. Found in P2.5; fixed in `a05da98` (both:
+  real-archive tests derive from `plan()`, scenario tests use `frozenP1Archive()`). New tests there must follow suit.
+- **`db-gate.mjs`'s `process.exit(1)` after APPLY FAILED can crash node on Windows** (exit 3221226505 / 0xC0000409, the
+  libuv `UV_HANDLE_CLOSING` assertion), depending on what the archive made PGlite do before the failure. With P2.5's file
+  it happens every time. prove-red then reports `apply-error` as WRONG even though the right FAIL lines printed. Close
+  PGlite and set `process.exitCode` instead. Found in P2.5; fixed in `a05da98`: the gate body is `runGate(db)`, which
+  RETURNS 0/1, `main()` closes PGlite in a `finally`, and the file sets `process.exitCode` once. Never add a
+  `process.exit()` back to a PGlite script; return the code instead.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-29 (B3 + P2.5 land) — archive-size-proof db-apply tests, db-gate exit fix, P2.5 committed
+
+- Did: `a05da98` fix(test): `scripts/db-apply.test.ts` derives real-archive counts from `loadMigrations`/`plan()`
+  (plus: units = files − pairs; dry-run batch k carries exactly units 1..k); the partial-ledger and stop-at-failure
+  scenarios run on `frozenP1Archive()` (the six P1 files). `scripts/db-gate.mjs` returns its exit code on every path
+  and closes PGlite. Then P2.5 committed with its records.
+- Verified: db-apply tests green at 7 and at 8 files (a temporary probe migration, removed); an applier mutation
+  (counts off by one) turned 3 of them red, reverted. apply-error prove-red crashed 2/2 before the fix and passed 4/4
+  after; full prove-red 34/34 on 3 consecutive runs. Guard-failed and empty-dir runs exit 1. Full chain green.
+- Resolved: B3 (§4).
+- Left off: P2.6 next; P2.7 turns the P2.5 scratch probe into gate lines. Nothing pushed.
+
+### 2026-09-29 (P2.5) — onboarding RPCs written and verified; BLOCKED on scope, NOT committed
+
+- Did: NEW `supabase/migrations/20260929000000_themis_onboarding.sql` with `bootstrap_me()` and
+  `import_local_decision(ws, payload)` (§2). lint, typecheck, db:check and db:gate (291 PASS, applied twice) are green.
+  A scratch PGlite probe went 70/70: idempotency, dedupe, cross-tenant/viewer/anon/service refusals, 28 bad payloads
+  refused atomically. Two archive-copy mutations went RED on the existing catalogue-derived gate lines (no gate edit
+  needed). No live contact.
+- Decided (DECISIONS.md P2.5): personal workspace = the oldest the caller created and owns; the import dedupe key is in
+  audit_log; advisory locks in the two-int4 keyspace; a strict payload; no schema change.
+- Blocked: B3 (§4). `db-apply.test.ts` hard-codes the archive size, and db-gate's `process.exit` crashes node on Windows
+  in prove-red `apply-error`. Both are out of scope, so the file is NOT committed.
+- Found: §5 (the two items above).
+- Left off: the lead clears B3 (a test-writer on `db-apply.test.ts` and a builder on `db-gate.mjs`), re-runs the chain,
+  and commits P2.5. Then P2.6.
 
 ### 2026-09-29 (P2.4) — Playwright wiring: e2e against the production build
 
@@ -776,6 +827,9 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
 - **2026-09-28:** the live apply exposes `themis` only AFTER the apply and a clean `pre → post` diff, appends it LAST to `db_schema`, and re-diffs after exposing; a live session uses ONE transport (a PAT with the scripts, or the connector's `execute_sql` only, never `apply_migration`) (DECISIONS.md P1.13).
 - **2026-09-28:** no Supabase config = NO client (`supabase` is null, local-only P0 matrix), never a stub, never a throw; the client is pinned to schema `themis`; env names are read literally (DECISIONS.md P2.2).
 - **2026-09-28:** GitHub Pages SPA fallback = `dist/404.html` as a byte copy of index.html (Vite plugin), never a redirect, so auth callback URLs are untouched; declarative `BrowserRouter`; in-app `*` not-found (DECISIONS.md P2.3).
+- **2026-09-29:** onboarding RPCs take the caller only from `auth.uid()`. The personal workspace = the oldest the caller
+  created and owns. The import dedupe key is its `audit_log` row (per workspace). Advisory locks use the two-int4 keyspace
+  (DECISIONS.md P2.5).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

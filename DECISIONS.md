@@ -389,3 +389,38 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   project by accident. The names are in `e2e/support/live-env.mjs`; P2.9/P2.14 may add to them.
 - **The e2e typecheck runs inside `npm run e2e` (`e2e/support/tsconfig.json`)** because the tsconfig files were out of
   P2.4's scope. The fleet pattern (argus-news `tsconfig.e2e.json` referenced from `tsconfig.json`) is the better home.
+
+## 2026-09-29 — P2.5 onboarding RPCs: personal workspace, import dedupe via audit_log, strict payload
+
+- **"Personal workspace" = the oldest workspace the caller created (`created_by = auth.uid()`) and still owns.** There
+  is no marker column: P1.4's exact FK set on `workspaces` would go red on a `personal_of` FK. An invited-only user
+  still gets a workspace of their own, a later team workspace never replaces the personal one, and if the personal
+  workspace is deleted the next `bootstrap_me()` creates a new one ("only if absent").
+- **The import dedupe key lives in `audit_log`,** not in a new column or table. P1.5's exact column and unique-key sets
+  pin `decisions`, and a new table needs a LEAK_MATRIX entry (P2.7's file). Each import appends one
+  `audit_log(entity 'decision', action 'import_local', after {client_import_id, counts})` row. That is also the
+  provenance record (spec §2: every number has an author). The key is scoped to the workspace, so it cannot reveal
+  another tenant's decision. It returns the earlier id only while that decision still exists. A deleted import
+  re-imports.
+- **Serialisation by `pg_advisory_xact_lock(int4, int4)`** (class = hashtext of the function name). The two-key form
+  is a separate lock space from the bigint form, so it cannot collide with another app's advisory locks in the shared
+  project. Each later statement in a READ COMMITTED function takes a fresh snapshot, so the waiter sees the winner's
+  commit.
+- **The payload is strict where the tables are lenient:** weights and scores must be integral JSON numbers (a smallint
+  cast would round 3.5 silently), client ids must be unique, and scores that name unknown ids are refused, not
+  dropped. There is a cap of 100 criteria and 100 options (an invented abuse bound; the UI has none). The methodology
+  and scale enums and the text lengths are left to the table CHECKs, so the enum lists stay in one place (the gate
+  checks them against decision.ts).
+- **EXECUTE is revoked from service_role too.** Both functions read `auth.uid()`, which is null for the service key, so
+  granting it would only produce a `not_authenticated` path.
+- **No audit row in `bootstrap_me()`.** PLAN puts the audit scope in P4.2 (status changes, approvals, revisions,
+  role changes).
+
+## 2026-09-29 — B3: tests against the real archive derive their size; db-gate returns its exit code
+
+- **A test about the REAL migration archive derives its counts** (`loadMigrations(ARCHIVE)`, `plan()`); a test about
+  an exact SCENARIO (partial ledger, stop at the 3rd file) runs on a frozen copy of named files (`frozenP1Archive()`
+  in `scripts/db-apply.test.ts`). Shipped migrations never change, so the frozen copy stays valid forever.
+- **`scripts/db-gate.mjs` never calls `process.exit()`.** `runGate(db)` returns 0/1, `main()` closes PGlite in a
+  `finally`, and `process.exitCode` is set once. The whole body was re-indented into the function (`git diff -w` is
+  ~30 lines); the checks themselves are unchanged.
