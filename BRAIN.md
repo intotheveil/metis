@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.11 db:apply, the Management-API applier) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.12 db:snapshot + db:snapshot:diff, read-only) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -129,6 +129,21 @@ set null` FK action, so deleting a user (Themis or Hephaestus) works. No role ho
   committed batch per unit, stops at the first error. **`PAIRED` (20260928235000 + 20260928235500) is one unit = one
   transaction.** checksum = sha256 of the LF-normalised text. Exports `run({argv, env, fetch, dir, log, error})` (returns
   the exit code), `plan`, `buildBatch`, `checksum`, `loadMigrations`, `findTransactionControl`, `readApplied`.
+  **Live snapshot + diff (P1.12):** `scripts/db-snapshot.mjs` (`npm run db:snapshot -- <label>`, same two env names,
+  exit 2 without them) sends 14 catalogue SELECTs through `mgmt-api.mjs`. Each goes through `readOnlyClient` →
+  `assertReadOnly`, which refuses anything but ONE plain select over `pg_catalog.*`/`information_schema.*`/
+  `supabase_migrations.schema_migrations` (version only) using allow-listed pure functions. There are no `$`, `"`, `\`,
+  comments or comma joins, and every query is validated before the first request. It writes
+  `ops-snapshots/<iso>-<label>.json` (gitignored), `format: themis-db-snapshot/1`. The file has `{format, label, takenAt,
+projectRef, summary, sections}`, and `sections` = schemas, relations, constraints, policies, functions, triggers, types,
+  default_acl, extensions, roles, role_settings, publication_tables, event_triggers and migrations_ledger. Every row has
+  `schema`, the schema that OWNS it (null = database-level). Internal FK triggers are owned by their constraint's
+  schema. `pgrst.db_schemas` is split into one row per schema. Definitions are md5 only. Detail covers public, auth,
+  storage, supabase_migrations and themis; the schemas section lists all of them. `scripts/db-snapshot-diff.mjs`
+  (`npm run db:snapshot:diff -- pre post`; a file or a label, where a label resolves to the newest file) exits 0 when
+  nothing outside themis changed, 1 on any change outside themis, and 2 when the snapshots cannot be compared. The
+  Data-API exposed-schema LIST is PostgREST config (`GET /v1/projects/{ref}/postgrest`), not SQL. The snapshot cannot
+  see it, so the P1.13 runbook reads it separately.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -165,7 +180,10 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   red gate blocks the Pages deploy. The lead pushes it; the push needs the gh `workflow` scope (§5). A green PR run is
   still to be observed. P1.11 done locally (committed, NOT pushed, never run live): `npm run db:apply`, the
   Management-API applier (§2), with 35 tests on a fake fetch and PGlite; suite 467 tests. Nothing is applied live yet.
-  Next: P1.12 (snapshot/diff) and then P1.13 (the runbook).
+  P1.12 done locally (committed, NOT pushed, never run live): `npm run db:snapshot` + `npm run db:snapshot:diff`, a
+  read-only catalogue snapshot and an outside-themis diff (§2). It has 84 tests; on PGlite a real `db:apply` shows up
+  only under themis, and 10 sabotages outside themis turn it RED. The suite is 551 tests. Next: P1.13 (the runbook +
+  evidence pack).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -238,6 +256,13 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   normalises; any other tool that compares against `themis.schema_migrations.checksum` must do the same. Found in P1.11.
 - **A per-file rolled-back dry-run cannot work on a fresh ledger.** Each file needs the objects the earlier pending files
   create. db:apply's dry-run therefore sends units 1..k in one rolled-back batch. Found in P1.11.
+- **A themis FK into auth.users puts triggers ON auth.users.** Postgres adds internal `RI_ConstraintTrigger_*` triggers
+  to the REFERENCED table. A naive "triggers on auth.users" check therefore goes red after every Themis apply, and an
+  "ignore internal triggers" rule would hide a real change. `db:snapshot` attributes each internal trigger to the schema
+  of its constraint's table. Found in P1.12.
+- **PGlite has no contrib extension unless the constructor is given it.** `create extension pgcrypto` fails with "not
+  available". Import it (for example `@electric-sql/pglite/contrib/bloom`) and pass `new PGlite({ extensions: { bloom } })`.
+  Found in P1.12.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -258,6 +283,19 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.12) — `npm run db:snapshot` / `db:snapshot:diff`: read-only live snapshot and diff
+
+- Did: NEW `scripts/db-snapshot.mjs`, `scripts/db-snapshot-diff.mjs` and `scripts/db-snapshot.test.ts` (84 tests);
+  scripts in `package.json`; `ops-snapshots/` added to `.gitignore`. The behaviour is in §2. HTTP goes only through the
+  P1.11 `mgmt-api.mjs`. The suite is 551 tests, and lint, typecheck, db:check and db:gate are green. The diff CLI was
+  exercised on PGlite snapshots (pre→post exit 0 with 518 themis changes; plus a public table → exit 1). NOT run
+  against any live project, and not pushed.
+- Decided (DECISIONS.md P1.12): read-only is enforced by a checker; rows are attributed to the schema that owns them
+  (FK triggers go to their constraint's schema); the pgrst.db_schemas list is split per schema; definitions are stored
+  as md5; object detail covers the five ADR-0002 schemas and every schema is listed.
+- Left off: P1.13 (the runbook: snapshot pre → dry-run → expose themis, reading `GET /postgrest` first → apply →
+  snapshot post → diff → Hephaestus regression).
 
 ### 2026-09-28 (P1.11) — `npm run db:apply`: the Management-API applier
 
@@ -509,6 +547,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** audit_log's append-only trigger permits only the actor FK's SET NULL (actor → NULL, all else unchanged); no role gains UPDATE (DECISIONS.md "audit_log actor erasure").
 - **2026-09-28:** `db:gate:prove-red` counts a sabotage as RED only on exit 1 AND its expected FAIL line(s), with a green control run; sabotages are data in the script (DECISIONS.md P1.9).
 - **2026-09-28:** `db:apply` sends the pair 20260928235000 + 20260928235500 as ONE transaction, its dry-run is cumulative (units 1..k, rolled back), and checksums hash LF-normalised text (DECISIONS.md P1.11).
+- **2026-09-28:** `db:snapshot` is read-only because a checker refuses everything else. Its diff allows a change only in
+  rows OWNED by `themis`, with FK triggers attributed to their constraint's schema and the pgrst.db_schemas list split
+  per schema. It stores definitions as md5 only (DECISIONS.md P1.12).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

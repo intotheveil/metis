@@ -685,3 +685,72 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - Scope note: PLAN lists `scripts/db-apply.test.ts` under P1.12's test-writer; the lead asked for it here, so it landed
   with P1.11. P1.12's test-writer still owns `db-snapshot.test.ts`.
 - Next: P1.12 (snapshot/diff), then P1.13 runbook. The live dry-run is an operator step (P1.13), not this task.
+
+## 2026-09-28 — P1.12 read-only live snapshot and diff: `npm run db:snapshot` / `db:snapshot:diff`
+
+- **Files:** NEW `scripts/db-snapshot.mjs`, NEW `scripts/db-snapshot-diff.mjs`, NEW `scripts/db-snapshot.test.ts` (84 tests).
+  Also `package.json` (scripts `db:snapshot`, `db:snapshot:diff`) and `.gitignore` (`ops-snapshots/`). No migration.
+- **`npm run db:snapshot -- <label>`:**
+  - Env: `SUPABASE_ACCESS_TOKEN` and `THEMIS_SUPABASE_PROJECT_REF`. If either is missing, or the label is bad, it exits 2
+    and sends nothing.
+  - It sends 14 catalogue SELECTs through `scripts/lib/mgmt-api.mjs`, the P1.11 client. It does not have an HTTP client
+    of its own.
+  - It writes `ops-snapshots/<iso with : and . as ->-<label>.json`. An API error exits 1 and writes no file. The token
+    is redacted everywhere.
+- **Read-only by construction:**
+  - `readOnlyClient` → `assertReadOnly` accepts only ONE plain `select`, with no `$`, `"`, `\` or comments and no
+    write/lock/session words.
+  - Only allow-listed pure functions may be called.
+  - FROM/JOIN targets are only `pg_catalog.*`, `information_schema.*` and `supabase_migrations.schema_migrations`
+    (version only). Comma joins are refused.
+  - `takeSnapshot` validates every query before it sends the first one.
+- **Sections:** schemas (all non-system), relations, constraints, policies, functions, triggers, types, default_acl,
+  extensions, roles, role_settings, publication_tables, event_triggers, migrations_ledger. Object-level detail covers
+  public/auth/storage/supabase_migrations/themis. Every row carries `schema`, the schema that owns it (null =
+  database-level). Internal FK triggers belong to the schema of their constraint. `pgrst.db_schemas` is split into one
+  row per schema.
+- **Summary block (human-readable):**
+  - `themisSchemaExists` and `themisObjects`;
+  - `supabaseMigrations {count, maxVersion}`;
+  - `authUsersTriggers [{name, owner, internal}]`;
+  - `public {tables, policies, functions, triggers}`;
+  - `extensions`;
+  - `exposedSchemaFacts`.
+- **`npm run db:snapshot:diff -- <before> <after>`** (a file, or a label → the newest `ops-snapshots/*-<label>.json`):
+  - Rows are matched per section key.
+  - Output: `+`/`-`/`~` lines, split into "inside themis (allowed)" and "OUTSIDE themis".
+  - Exit 0 when nothing outside themis changed and 1 when something did. Exit 2 on usage errors, an unreadable file, a
+    different project or format, or a missing section.
+- **Tests (84), all without network:**
+  - Every section passes the checker, and 36 hostile statements are refused, among them DML, DDL, `select into`,
+    `for update/share`, a data-modifying CTE, `set_config`, `pg_sleep`, `nextval`, user functions, public/auth reads,
+    reads through a join, a subquery or a comma join, dollar quoting, comments, E-strings and unbalanced parens.
+  - A refused statement sends zero requests, and a bad LAST section also means zero requests.
+  - On a fake fetch: usage, env, the URL and Bearer header, the file name and JSON shape, API errors (exit 1, no file,
+    token redacted), and a non-array payload.
+  - The diff, as a pure function and through the CLI: label resolution picks the newest file, and it exits 0, 1 or 2.
+  - **On PGlite + the db:gate shim**, every SELECT parses and returns the expected shape. The real archive is applied by
+    the real `db:apply --apply`, and adding `themis` to `pgrst.db_schemas` puts ALL 500+ changes under themis, with 0
+    outside. The RI triggers on auth.users from themis FKs are attributed to themis.
+  - 10 RED cases: a public table, a trigger on auth.users, a changed public policy, RLS turned off on a public table, a
+    Hephaestus ledger row, a global default privilege, a new schema, an exposed schema removed, a new extension (bloom
+    contrib), and a changed auth.users column.
+- **Mutation check** (on scratch backups, then restored):
+  - RI attribution off → 1 red;
+  - readOnlyClient without the check → 1 red;
+  - no pre-validation → 1 red;
+  - relation allow-list off → 6 red;
+  - diff counting null-schema changes as inside → 3 red;
+  - no pgrst split → 2 red.
+- **Exercised (§5):** a scratch script wrote pre/post/sabotaged snapshots from PGlite into `ops-snapshots/`.
+  - `node scripts/db-snapshot-diff.mjs pre post` → `inside themis (allowed): 518 change(s)` … `DIFF PASSED`, exit 0.
+  - `pre sabotaged` (plus `create table public.leak`) → `OUTSIDE themis: 1 change(s)  + relations: public | leak`,
+    `DIFF FAILED`, exit 1.
+  - `git check-ignore` confirms that `ops-snapshots/` is ignored. The scratch files were then removed.
+  - `npm run db:snapshot` with no label → usage, exit 2. With empty env → "missing env … nothing is sent".
+- **NOT run against any live project.** No token was used.
+- **Passed:** `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate`, chain exit 0. That
+  is 551 tests (467 + 84), the guard on 6 files, and GATE PASSED.
+- **Note for P1.13:** the exposed-schema list itself is PostgREST config. Read it with `GET /v1/projects/{ref}/postgrest`
+  in the runbook, because the SQL snapshot only sees schema ACLs and any `pgrst.db_schemas` role setting.
+- **Next:** P1.13, the runbook and the pre-apply evidence pack.

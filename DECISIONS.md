@@ -269,3 +269,34 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   statement in a pending file (a `commit;` or `end;` would end our transaction and COMMIT a dry-run).
 - **The ledger read uses `to_regclass`**, not the text of a "relation does not exist" error. It is the same meaning with
   no string matching on server messages.
+
+## 2026-09-28 — P1.12: db:snapshot is read-only by a checker, owner-attributed rows, hashes not text
+
+- **Read-only is enforced by a checker, not by trust.** Every request goes through `readOnlyClient`, which calls
+  `assertReadOnly` and throws before sending. A statement passes only if it is ONE statement starting with `select`; has no
+  `$`, `"`, backslash or comment; has no write/lock/session word (`insert`, `into`, `for update/share`, `set`, `do`, …);
+  calls only allow-listed pure functions (`md5`, `string_agg`, the `pg_get_*def` readers, …); and every FROM/JOIN target
+  is `pg_catalog.*`, `information_schema.*` or `supabase_migrations.schema_migrations`. Comma joins are refused, so a
+  second FROM item cannot skip the target check. `takeSnapshot` validates every query before it sends the first one.
+- **One non-catalogue read is allowed: `supabase_migrations.schema_migrations`, and only its `version` column.** PLAN
+  asks for Hephaestus's ledger versions, and they live in that table. `statements` (Hephaestus's SQL) is never read, and
+  neither is `name`, because older CLI versions lack that column.
+- **Each row records the schema that OWNS it, and the diff allows a change only where that is `themis`.** Rows at
+  database level (extensions, roles, event triggers, global default ACLs, role settings other than
+  `pgrst.db_schemas`) have `schema: null`, so a change to them always counts as outside themis.
+- **Internal FK triggers are attributed to the schema of their constraint.** `themis.profiles → auth.users` puts
+  `RI_ConstraintTrigger_*` triggers ON auth.users. They belong to themis, so the diff classes them as themis changes.
+  A trigger someone writes on auth.users is owned by `auth` and turns the diff RED. The PGlite test proves both cases.
+- **`pgrst.db_schemas` role settings are split into one row per schema.** Adding `themis` to that list counts as a
+  themis change. Removing any other schema from it counts as outside. The value of every other role setting is stored
+  only as an md5.
+- **Definitions are stored as md5 hashes, never as text.** This covers functions, policies, views, indexes, triggers,
+  constraints and columns. The snapshot proves that nothing changed without copying Hephaestus's code into a local file.
+- **Object-level detail covers the five ADR-0002 schemas (public, auth, storage, supabase_migrations, themis).** A
+  separate section lists ALL non-system schemas, so a brand-new schema anywhere still shows up. Schemas such as
+  `realtime` are left out because the platform changes them without any action from us (for example, daily partitions),
+  and they would make the diff fail for no reason.
+- **The Data API's exposed-schema list is PostgREST config, not SQL.** The snapshot captures the SQL-side facts: schema
+  ACLs, any `pgrst.db_schemas` role setting, and whether `themis` exists. The list itself is read with
+  `GET /v1/projects/{ref}/postgrest` in the P1.13 runbook. `mgmt-api.mjs` (P1.11) only POSTs SQL, and this task's
+  scope did not include a GET.

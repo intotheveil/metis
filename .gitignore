@@ -20,3 +20,6 @@ dist
 .claude/checkpoints.log
 .claude/CLAUDE.md.bak
 .claude/CLAUDE.md.pre-kit
+
+# --- Live catalogue snapshots (db:snapshot, P1.12): local evidence, never committed ---
+ops-snapshots/
