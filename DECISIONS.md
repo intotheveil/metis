@@ -352,3 +352,19 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   (auth-js GoTrueAdminApi, storage-js), and the build strips them. A minified probe of the client has 0 hits. The rule
   stays global. If a future version ships the literal in code, the fix is a narrow exception keyed to that exact
   occurrence, with a test, never a wider rule.
+
+## 2026-09-28 — P2.3: 404.html is a byte copy of index.html; declarative BrowserRouter; unknown paths render in-app
+
+- **The Pages SPA fallback is a copy (`dist/404.html` = `dist/index.html`), made by a Vite plugin (`spaFallback()` in
+  `vite.config.ts`, `writeBundle`), not the "404.html redirects to `/?p=…` and index.html restores it" pattern.** The
+  redirect trick rewrites the URL twice and has to re-encode the query, which is exactly where a Supabase PKCE `?code=`
+  would be lost or mangled. A copy leaves the requested URL untouched. The price: Pages answers deep links with HTTP
+  status 404 (the body is the app). Browsers render it normally; crawlers will not index deep links, which is fine
+  (only `/` is public content). A plugin, not a post-build script, so `npm run build` and CI need no change.
+- **Declarative `BrowserRouter` + `useRoutes`, not `createBrowserRouter`/`RouterProvider`.** Measured: the data router
+  adds +95 kB raw / +30 kB gzip, the declarative one +40 kB / +14 kB. Nothing needs loaders or actions. P2.10 can
+  switch if it ever does; the route table (`src/routes/routes.tsx`) is a `RouteObject[]` either way.
+- **A `*` route renders "Page not found" inside the app.** With 404.html = the app, every mistyped URL boots React;
+  without a catch-all it would render an empty page.
+- **`basename` comes from `import.meta.env.BASE_URL`** (via `basenameFrom`), so the ADR-0003 "moving back under a path
+  is one line" rule still holds for routing.

@@ -1042,3 +1042,57 @@ likely timing under load. Watch it.
 
 - The test-writer found `resolveAppEnv` threw `TypeError ... trim is not a function` on a number or boolean, which breaks its "never throws" contract. Fixed with a `typeof` check, so a non-string now means local-only. The 3 red tests are green, and the suite is 703/703.
 - The flaky first test in `eslint-secret-boundary.test.ts` came from a cold ESLint load under a parallel run. `beforeAll` now warms up with one `lintText` (60 s hook budget). 3 consecutive full runs were green.
+
+## 2026-09-28 — P2.3 (builder): routing and SPA fallback on Pages
+
+**Files:** `package.json` + `package-lock.json` (dep `react-router-dom` ^7.18.4), `src/main.tsx`, NEW
+`src/routes/routes.tsx` (route table + `basenameFrom`), NEW `src/routes/AppRoutes.tsx` (`useRoutes`), NEW
+`src/routes/pages.tsx` (route shells), `vite.config.ts` (`spaFallback()` plugin). `src/App.tsx` is UNCHANGED: it is
+mounted as the `/` element as-is. No migration, no live service, nothing pushed.
+
+**What it does:**
+- Routes: `/` (the P0 matrix), `/signin`, `/auth/callback`, `/w/:workspaceId/*`, `/invite/:token`, plus `*` (an in-app
+  "Page not found"). The non-`/` routes are honest shells ("Accounts are not live yet…") that P2.10–P2.12 replace.
+  `AuthCallbackRoute` never navigates or rewrites the URL, so `?code=` is left for P2.10's `detectSessionInUrl`.
+- `BrowserRouter` with `basename = basenameFrom(import.meta.env.BASE_URL)` ('/' today, '/themis' if the app moves back
+  under a path, so the ADR-0003 one-line rule still holds).
+- `spaFallback()` (Vite plugin, build only, `writeBundle`) copies `dist/index.html` to `dist/404.html`. GitHub Pages
+  serves `404.html` for any path without a file, so every deep link boots the app. It is a COPY, not the
+  `404.html → /?p=…` redirect trick, so the requested URL (with a PKCE `?code=&state=`) is never rewritten. Asset URLs
+  in index.html are absolute (`/assets/…`, base '/'), so they resolve at any depth. No CI or build-script change needed:
+  the plugin runs inside `npm run build`.
+
+**PKCE check (the lead's question):** the plan requires `/auth/callback` to survive a hard load (P2.3) and P2.2 set
+`flowType: 'pkce'` + `detectSessionInUrl`. With the copy approach there is NO redirect at all: the browser stays on
+`/auth/callback?code=…`, and nothing in the route consumes or strips the query. Proven in a scratch MemoryRouter probe
+(location after render = `/auth/callback?code=abc&state=x`) and by headless Edge rendering `/auth/callback?code=abc123`.
+
+**Bundle:** `index-*.js` 234.29 kB → **274.79 kB** (87.14 kB gzip, +40 kB raw / +14 kB gzip). The data router
+(`createBrowserRouter` + `RouterProvider`) measured 329.29 kB (103.95 kB gzip, +95 / +30), so the declarative
+`BrowserRouter` was chosen (DECISIONS.md P2.3).
+
+**Exercised (§5, observables):**
+- `cmp dist/index.html dist/404.html` → identical after `npm run build`.
+- `npx vite preview --port 4173` (PID 16952, killed with `taskkill //PID 16952 //T //F`, port confirmed free): curl with
+  `Accept: text/html` on `/`, `/auth/callback`, `/auth/callback?code=abc123&state=xyz`, `/signin`, `/w/ws-1/decisions/9`,
+  `/invite/tok123`, `/no/such/page` → every one **200** with `<title>Themis — Decision Intelligence Platform</title>`,
+  `<div id="root"></div>` and `/assets/index-CoergQmW.js`; that asset → 200. Headless Edge `--dump-dom`:
+  `/auth/callback?code=abc123&state=xyz` → `<h1>Signing you in</h1>`; `/w/ws-1/x` → `<h1>Workspace</h1>` + `ws-1`;
+  `/` → the matrix's `<h1><span class="sr-only">THEMIS`.
+- **vite preview has its own SPA fallback** (appType 'spa'), so it proves the router, not `404.html`. A scratch
+  Pages emulator (static files only, else `404.html` with status 404, no rewrites; PID 6792, killed, port free):
+  `/` → 200 shell; `/auth/callback?code=abc123&state=xyz` → **404 + the app shell**; `/invite/tok` → 404 + shell;
+  headless Edge on `/auth/callback?code=abc123` renders `Signing you in`. Control: with `dist/404.html` moved away the
+  same URL gives `PAGES DEFAULT 404: File not found` — so the fallback file is what makes the deep link work.
+- Scratch route probe (7 tests via MemoryRouter, deleted after; permanent coverage is the test-writer's): `/` shows the
+  matrix, each shell renders, `/w/ws-1/decisions/9` shows `ws-1`, unknown → not found, `basenameFrom('/')='/'`,
+  `basenameFrom('/themis/')='/themis'`.
+
+**Green:** `npm run lint && npm run typecheck && npm test` (**703/703**, the 16 P0 App/model tests included, unchanged)
+`&& npm run db:check && npm run db:gate` (GATE PASSED) `&& npm run build && npm run check:bundle` (OK, 11 files — 404.html
+is now scanned too). No live Supabase; local-only mode is still the default (no env → no client).
+
+**Next:** test-writer for P2.3 — `src/routes/*.test.tsx` (each route via MemoryRouter; `/auth/callback?code=` keeps its
+query; `*` → not found; `basenameFrom`), and a build-level check that `dist/404.html` equals `dist/index.html` (e.g. call
+`spaFallback()`'s hooks on a temp dir, or assert after a build). Then P2.4: note that Pages answers deep links with
+HTTP **404** (body = app), so a Playwright deep-link spec must assert the rendered app, not `response.ok()`.

@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P2.2 Supabase client + local-only fallback; P2.1 tests recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P2.3 routing + Pages SPA fallback; P2.2 tests + resolveAppEnv fix `20e2b77` recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -34,8 +34,14 @@ call".
   - `src/lib/decision.ts` — pure model: presets (`presetCriteria(method, scale)`), `scoreOption`
     (weighted, normalised 0–100 where 1→0 and 5→100), `rank`, `verdict`
     (`empty | incomplete | close (<5 pts) | clear`).
-  - `src/App.tsx` — the single-page UI: frame → weigh → score → recommendation panel; the
-    "AI analyst" card is explicitly marked roadmap.
+  - `src/App.tsx` — the P0 matrix UI: frame → weigh → score → recommendation panel; the
+    "AI analyst" card is explicitly marked roadmap. Since P2.3 it is the element of route `/`, unchanged.
+  - **Routing (P2.3):** `react-router-dom` 7, declarative `BrowserRouter` (main.tsx) + `useRoutes` (`src/routes/AppRoutes.tsx`)
+    over the `RouteObject[]` in `src/routes/routes.tsx`: `/` (App), `/signin`, `/auth/callback`, `/w/:workspaceId/*`,
+    `/invite/:token`, `*` (in-app not found). The non-`/` elements are honest shells in `src/routes/pages.tsx` that
+    P2.10–P2.12 replace. `basename = basenameFrom(import.meta.env.BASE_URL)`. **Pages SPA fallback:** the
+    `spaFallback()` Vite plugin (`vite.config.ts`, build only) copies `dist/index.html` → `dist/404.html`, so Pages
+    serves the app (with HTTP 404) for any deep link, the URL untouched, so a PKCE `?code=` survives. No redirect trick.
   - `src/lib/env.ts` (P2.2) — the ONLY reader of `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` (each read by its full
     literal name). Pure `resolveAppEnv(raw)` never throws: `configured` only when both are non-blank and the URL is
     absolute http(s); else `local` with reason `missing-url|missing-anon-key|invalid-url`. Exports `appEnv`, `isLocalOnly`.
@@ -217,8 +223,13 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   is **667**, and 3 mutations went RED (BUILD_LOG).
   P2.2 done (builder; committed locally, NOT pushed): `@supabase/supabase-js` + `src/lib/env.ts` + `src/lib/supabase.ts`
   (§2) + `.env.example`. The app is unchanged: with no env it runs local-only, and the built bundle is byte-identical to
-  before (supabase.ts is not imported yet). `check:bundle` stays green without any exception. Test-writer
-  `src/lib/env.test.ts` is still to come.
+  before (supabase.ts is not imported yet). `check:bundle` stays green without any exception. P2.2 tests done (commit
+  `20e2b77`): `src/lib/env.test.ts` (25) + `src/lib/supabase.test.ts` (11, zero network). They caught `resolveAppEnv`
+  throwing on non-string input, fixed with a `typeof` check in the same commit. The suite is **703**.
+  P2.3 done (builder; committed locally, NOT pushed): routing + the Pages SPA fallback (§2). `/` is still the unchanged P0
+  matrix (703/703 green); `/signin`, `/auth/callback`, `/w/:id/*`, `/invite/:token` are shells. `dist/404.html` =
+  `dist/index.html`; a deep link was proven on `vite preview` (200 + shell) and on a Pages emulator (404 + shell; control
+  without 404.html = Pages' own 404). Bundle 234 → 275 kB (87 kB gzip). Test-writer for P2.3 is next, then P2.4.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -345,12 +356,42 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   `import.meta.env.X` read for the lint rule to catch. Read each allowed name literally, as `src/lib/env.ts` does. P2.2.
 - **supabase-js's `createClient` throws at call time on an empty or invalid URL.** Calling it at module top level with
   unset env would crash the whole page at import. `src/lib/supabase.ts` creates no client in local-only mode. P2.2.
+- **`vite preview` does NOT prove the Pages fallback.** Its default `appType: 'spa'` serves index.html for any HTML
+  request, so a deep link is 200 there even with no `dist/404.html` at all. Proving the Pages behaviour needs a server
+  without rewrites (P2.3 used a scratch static server: file, else `404.html` with status 404). Found in P2.3.
+- **On Pages a deep link answers HTTP 404 with the app as its body** (that is how the 404.html fallback works). A
+  Playwright/curl check must assert the rendered app, not `response.ok()`/status 200. Only a live `curl` of `/` is 200.
+- **The React Router data router (`createBrowserRouter`) costs ~2.4× the declarative one** (+95 kB raw / +30 kB gzip vs
+  +40 / +14, measured at P2.3). Don't switch to it for convenience; switch only for loaders/actions, and re-measure.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P2.3) — routing and the GitHub Pages SPA fallback
+
+- Did: `react-router-dom` ^7.18.4; `src/main.tsx` mounts `BrowserRouter` + NEW `src/routes/{routes.tsx,AppRoutes.tsx,pages.tsx}`
+  (§2); `vite.config.ts` gains `spaFallback()`, which copies `dist/index.html` → `dist/404.html` at build. `src/App.tsx` is
+  untouched (it is route `/`). Chain green: lint, typecheck, 703/703, db:check, db:gate, build, check:bundle (11 files).
+  Exercised: `vite preview` → every deep link (incl. `/auth/callback?code=…`) 200 + shell, headless Edge renders the right
+  route; a Pages emulator → deep link 404 + shell, and without 404.html → Pages' default 404 (the control). Both servers
+  killed by PID. No live Supabase; local-only mode is still the default. Not pushed.
+- Decided (DECISIONS.md P2.3): a byte copy, not the `?p=` redirect trick, so a PKCE `?code=` is never rewritten; the
+  declarative router (half the bundle cost of the data router); an in-app `*` not-found route; basename from BASE_URL.
+- Found: §5 (vite preview hides a missing 404.html; Pages deep links are status 404; data-router cost).
+- Left off: test-writer for P2.3 (routes via MemoryRouter, `?code=` preserved, `*`, `basenameFrom`, and a check that the
+  build's 404.html equals index.html). Then P2.4 (Playwright; assert the rendered app on deep links, not the status).
+
+### 2026-09-28 (P2.2 tests) — env + client coverage; resolveAppEnv fix (commit `20e2b77`)
+
+- Did: test-writer's `src/lib/env.test.ts` (25: every resolveAppEnv branch, odd inputs) and `src/lib/supabase.test.ts`
+  (11: exact client options, `clientFor` local → null, configured → schema `themis` + PKCE, module-level env via
+  `vi.stubEnv`/`vi.resetModules`, zero fetch calls). 5 mutations went RED. They found `resolveAppEnv` threw on a
+  number/boolean despite "never throws"; the builder fixed it with a `typeof` check. The first ESLint test warms up in
+  `beforeAll` (a cold load flaked once under a parallel run). Suite 667 → **703**, green 3 runs in a row.
+- Left off: P2.3.
 
 ### 2026-09-28 (P2.2) — Supabase client and local-only fallback
 
@@ -680,6 +721,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   per schema. It stores definitions as md5 only (DECISIONS.md P1.12).
 - **2026-09-28:** the live apply exposes `themis` only AFTER the apply and a clean `pre → post` diff, appends it LAST to `db_schema`, and re-diffs after exposing; a live session uses ONE transport (a PAT with the scripts, or the connector's `execute_sql` only, never `apply_migration`) (DECISIONS.md P1.13).
 - **2026-09-28:** no Supabase config = NO client (`supabase` is null, local-only P0 matrix), never a stub, never a throw; the client is pinned to schema `themis`; env names are read literally (DECISIONS.md P2.2).
+- **2026-09-28:** GitHub Pages SPA fallback = `dist/404.html` as a byte copy of index.html (Vite plugin), never a redirect, so auth callback URLs are untouched; declarative `BrowserRouter`; in-app `*` not-found (DECISIONS.md P2.3).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 
