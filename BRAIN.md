@@ -7,7 +7,7 @@
 
 **Last updated:** 2026-09-28 by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
-**Repo:** `intotheveil/themis` (public) · local `D:projects	hemis`   ·   **Deployed:** not yet: blocked on §4 B1. Target https://intotheveil.github.io/themis/
+**Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** not yet: blocked on §4 B1. Target https://intotheveil.github.io/themis/
 
 ---
 
