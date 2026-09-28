@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-29 (B3 closed by `a05da98`; P2.5 onboarding RPCs committed, full chain green; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-29 (B4 closed by `325f029`: the guard allows a READ of auth.users; P2.6 invite/membership RPCs committed, full chain green; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -139,6 +139,16 @@ set null` FK action, so deleting a user (Themis or Hephaestus) works. No role ho
   `client_import_id` uuid; integral weight 0..5 / score 1..5; ≤100 criteria/options; atomic. **Its dedupe key is the
   `audit_log` row `(entity 'decision', action 'import_local', after.client_import_id)`**, per workspace, valid while
   that decision exists. Payload contract: the function header.
+  **Invite + membership RPCs (P2.6, `20260929010000_themis_invites.sql`, committed locally, NOT pushed, never applied live):**
+  `create_invite(ws, email, role) → text` (raw 64-hex token returned once; the row keeps `encode(sha256(token),'hex')`;
+  7-day expiry; an admin cannot invite an owner), `accept_invite(token) → uuid` (the caller's `auth.users.email` = the
+  invite email AND `email_confirmed_at` set; unaccepted; unexpired; the inviter still holds the authority; not already a
+  member), `revoke_invite(invite_id)` (deletes a pending invite), `set_member_role(ws, member_id, role)`,
+  `remove_member(ws, member_id)` (an admin never grants/changes/removes owner; the last owner stays). Same definer/path/
+  EXECUTE pattern as P2.5; membership mutations serialise on `pg_advisory_xact_lock(hashtext('themis.memberships'),
+hashtext(ws))`. Errors are a SQLSTATE plus a message prefix (`not_authorized`, `invite_email_mismatch`, `last_owner`,
+  …), listed in the file header. No audit rows (P4.2's triggers). It reads the caller's email with `from auth.users`, which the guard allows since
+  B4 (`325f029`, §5). The db:gate shim's `auth.users` has `email_confirmed_at` (default now(), so fixture users are confirmed).
   **Live applier (P1.11):** `scripts/db-apply.mjs` (`npm run db:apply`, `-- --apply` to commit) over
   `scripts/lib/mgmt-api.mjs` (the only HTTP code: `POST https://api.supabase.com/v1/projects/{ref}/database/query`,
   body `{query}`, Bearer token; `fetch` injectable; every error has the token redacted; an error is a non-2xx status OR
@@ -262,6 +272,11 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
   fixes (`a05da98`: `db-apply.test.ts` counts derived from the archive / a frozen P1 copy; `db-gate.mjs` returns its
   exit code and closes PGlite). Chain green with 7 migrations: 728 tests, GATE PASSED (291 PASS), prove-red 34/34
   (3 consecutive runs), check:bundle OK, e2e 6/6. Next: test-writer for P2.5 is P2.7 (gate lines); then P2.6.
+  B4 closed (`325f029`): the guard allows a READ `from`/`join auth.users` written as code (§5); the shim has
+  `auth.users.email_confirmed_at`; prove-red has 35 sabotages. P2.6 done (builder; committed locally, NOT pushed):
+  `create_invite`, `accept_invite`, `revoke_invite`, `set_member_role`, `remove_member` (§2). Chain green with 8
+  migrations: 769 tests, GATE PASSED (292 PASS, 12 functions pinned), prove-red 35/35 + control, check:bundle OK, e2e 6/6.
+  Next: P2.7 (the P2.5 + P2.6 probe cases become db:gate lines; the P2.6 probe is in BUILD_LOG P2.6).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -269,17 +284,18 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
 
 ## 4. OUTSTANDING (the triage queue)
 
-| id  | sev | type       | summary                                                                                                                                                                                                                                                                                                                                                   | status                                                                                                                | added      |
-| --- | --- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------- |
-| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                                                                                                       | open                                                                                                                  | 2026-09-28 |
-| B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus                                                                                        | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
-| B3  | 🟠  | blocker    | P2.5 cannot commit. (1) `scripts/db-apply.test.ts` hard-codes the real archive size (6 files/5 units), so ANY new migration turns 6 tests red. (2) `scripts/db-gate.mjs` calls `process.exit(1)` on APPLY FAILED, which crashes node on Windows (0xC0000409) with the P2.5 archive, so prove-red `apply-error` is WRONG. Fixes proposed in BUILD_LOG P2.5 | closed 2026-09-29 (`a05da98`): counts derived / frozen P1 fixture; db-gate returns its exit code                                                                                                                  | 2026-09-29 |
-| S2  | 🟠  | checkpoint | CHECKPOINT P1-LIVE: go/no-go for the first live apply + exposing `themis` (`docs/ops/LIVE_APPLY.md`; the decisions list is in BUILD_LOG.md)                                                                                                                                                                                                               | open                                                                                                                  | 2026-09-28 |
-| T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                                                                                                                      | open                                                                                                                  | 2026-09-28 |
-| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                            | open                                                                                                                  | 2026-09-28 |
-| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                 | open                                                                                                                  | 2026-09-28 |
-| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                              | closed 2026-09-29 (P2.4)                                                                                              | 2026-09-28 |
-| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                                                                                                             | open                                                                                                                  | 2026-09-28 |
+| id  | sev | type       | summary                                                                                                                                                                                                                                                                                                                                                      | status                                                                                                                | added      |
+| --- | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------- |
+| S1  | 🟠  | checkpoint | Commercial v1 spec (`zeus/specs/THEMIS_SPEC.md`) awaiting operator approval + §10 answers (entity, prices, domain, email provider, repo visibility)                                                                                                                                                                                                          | open                                                                                                                  | 2026-09-28 |
+| B2  | 🟡  | bug        | Bootstrap `alter default privileges in schema themis revoke execute … from public` is a no-op (§5). Existing functions revoke explicitly and db:gate guards new ones. Builder: fix the comment/approach in a NEW migration; the global form would touch Hephaestus                                                                                           | closed 2026-09-28: per-function revokes are the rule, enforced by the db:gate PUBLIC/anon EXECUTE line (DECISIONS.md) | 2026-09-28 |
+| B3  | 🟠  | blocker    | P2.5 cannot commit. (1) `scripts/db-apply.test.ts` hard-codes the real archive size (6 files/5 units), so ANY new migration turns 6 tests red. (2) `scripts/db-gate.mjs` calls `process.exit(1)` on APPLY FAILED, which crashes node on Windows (0xC0000409) with the P2.5 archive, so prove-red `apply-error` is WRONG. Fixes proposed in BUILD_LOG P2.5    | closed 2026-09-29 (`a05da98`): counts derived / frozen P1 fixture; db-gate returns its exit code                      | 2026-09-29 |
+| B4  | 🟠  | blocker    | P2.6 cannot commit: `scripts/check-migrations.mjs` allows only `references auth.users`/`auth.uid()`, but `accept_invite` must read `auth.users.email` (PLAN). It needs one allow-list line for a READ (`from`/`join`, not `delete from`) plus a test. P2.7 also needs `email_confirmed_at` in `scripts/db-gate/shim.mjs`. Proposal and proof: BUILD_LOG P2.6 | closed 2026-09-29 (`325f029`): guard allows a code READ of auth.users (tested + prove-red); shim has email_confirmed_at | 2026-09-29 |
+| S2  | 🟠  | checkpoint | CHECKPOINT P1-LIVE: go/no-go for the first live apply + exposing `themis` (`docs/ops/LIVE_APPLY.md`; the decisions list is in BUILD_LOG.md)                                                                                                                                                                                                                  | open                                                                                                                  | 2026-09-28 |
+| T1  | 🔵  | tooling    | Follow-ups from P1.13: `db:apply --print`, `db:snapshot --from-raw <dir>`, a tested `db:postgrest` (get/expose/unexpose). The runbook's heredoc helpers stand in for them until then                                                                                                                                                                         | open                                                                                                                  | 2026-09-28 |
+| F1  | 🟠  | feature    | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                               | open                                                                                                                  | 2026-09-28 |
+| F2  | 🔵  | feature    | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                    | open                                                                                                                  | 2026-09-28 |
+| F3  | 🔵  | feature    | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                                 | closed 2026-09-29 (P2.4)                                                                                              | 2026-09-28 |
+| Q1  | 🟡  | question   | ❓ needs human input — product scope beyond the matrix: methodology playbooks (stage-gates, sprint decisions), RACI/approvals for enterprise?                                                                                                                                                                                                                | open                                                                                                                  | 2026-09-28 |
 
 ---
 
@@ -418,10 +434,59 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
   `process.exit()` back to a PGlite script; return the code instead.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
+- **The guard allows exactly ONE read of auth.users, and only written as code (B4, `325f029`).** `from auth.users` /
+  `[left|inner|…] join auth.users` in plain SQL or a PL/pgSQL body passes. Everything else stays RED: `delete from`
+  (also in a CTE, with `only`, quoted), `using auth.users`, a comma join (`from x, auth.users` — write `join`), update,
+  insert, merge, alter, truncate, lock, grant, triggers, `for update|share` in the same statement, `create view|table …
+  as`, `copy`, other auth tables, `auth.jwt()`, and ANY read that sits inside a string for dynamic SQL (single-quoted,
+  E'', or a `$q$` nested in a body — `maskLiterals` blanks those). A Themis RPC that needs the caller's email reads it
+  with `select … into … from auth.users u where u.id = auth.uid()`, nothing fancier. Found in P2.6.
+- **The guard's search_path rule reads to the end of the LINE.** `set search_path = '' as $f$ select … from auth.users
+  $f$` on one line is RED (it sees `auth` after the `=`). Keep `set search_path = ''` on its own line. Pre-existing; pinned
+  in `check-migrations.test.ts`. Found in B4.
+- **Known guard blind spot for DML: `execute format('delete from %I.%I', 'au' || 'th', 'users')` passes `db:check`**, and
+  `db:gate` cannot catch it either, because it never calls the function whose body holds it (the post-apply diff only
+  sees DDL). This predates B4 and is pinned as a test. Review is the control: any `execute` in a Themis function must
+  build its target from `themis.` constants. Found in B4.
+- **The db:gate shim's `auth.users.email_confirmed_at` defaults to `now()`; real Supabase's has NO default** (null until
+  confirmed). The default keeps `seedFixture`'s `(id, email)` users confirmed. A test of the unconfirmed path must set it
+  to null explicitly. Found in P2.6.
+- **In the leak-matrix harness, `s.sudo()` restores the actAs identity**, so the caller set before it is gone. Re-set
+  the caller after every `sudo`, or an RPC test runs as the wrong user. Found in the P2.6 probe.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-29 (B4 + P2.6 land) — the guard allows a READ of auth.users; invite and membership RPCs committed
+
+- Did: `325f029` fix(guard): `scripts/check-migrations.mjs` gains `maskLiterals` + `isAuthUsersRead` (a READ `from`/`join
+  auth.users` written as code; §5 lists what stays RED); `check-migrations.test.ts` 39 → 80 tests (7 GREEN forms + 2
+  bodies, 26 RED forms incl. the fooling attempts, dynamic-SQL splices, the pre-existing blind spot pinned);
+  `scripts/db-gate/shim.mjs` `auth.users.email_confirmed_at`; prove-red sabotage `auth-users-write-in-function` (an
+  UPDATE of auth.users next to an allowed read in a definer body) goes RED on the guard line. Five mutations of the new
+  code each turned tests RED (no masking, no delete lookbehind, no create/copy rule, no row-lock rule, no keyword
+  boundary). Then P2.6 committed as `feat: membership and invite RPCs (P2.6)` (migration unchanged).
+- Chain (P2.6 present): lint ✔ · typecheck ✔ · test 769/769 · db:check 8 migrations ✔ · db:gate GATE PASSED (292 PASS) ·
+  prove-red 35/35 + control GREEN · build ✔ · check:bundle OK (11 files) · e2e 6/6. The committed archive alone (7) also
+  passes db:check + db:gate with the new guard/shim. No live Supabase; nothing pushed.
+- Decided: DECISIONS.md "P1.3 allow-list extension" (2026-09-29): stricter than the proposed one-line regex.
+- Resolved: B4 (§4).
+- Left off: P2.7 turns the P2.5 and P2.6 probe cases into db:gate lines (P2.6 probe path: BUILD_LOG P2.6). CHECKPOINT
+  P1-LIVE still open.
+
+### 2026-09-29 (P2.6) — invite and membership RPCs written and proven; BLOCKED on the guard (B4), NOT committed
+
+- Did: NEW `supabase/migrations/20260929010000_themis_invites.sql` (§2): create_invite, accept_invite, revoke_invite,
+  set_member_role and remove_member. The scratch probe went 100/100 on the real archive + shim + seedFixture, and 5
+  archive-copy mutations went RED. lint, typecheck, build, check:bundle and e2e 6/6 are green. No live contact, nothing pushed.
+- Decided (DECISIONS.md P2.6): accept requires a confirmed email; the inviter's current authority is re-checked; revoke
+  deletes the pending row; no audit rows (P4.2); an existing member cannot accept.
+- Blocked: B4 (§4). The P1.3 guard forbids the `auth.users` read that PLAN requires. The fix belongs in
+  `scripts/check-migrations.mjs`, outside P2.6's file. With the proposed line: GATE PASSED 292, prove-red 34/34.
+- Found: §5 (the guard blocks auth.users reads; the shim lacks email_confirmed_at; `s.sudo` resets the caller).
+- Left off: the lead authorises the guard line (+ a test) and the shim column, re-runs the chain and commits P2.6. The
+  probe for P2.7 is in the builder's scratchpad (path in BUILD_LOG P2.6).
 
 ### 2026-09-29 (B3 + P2.5 land) — archive-size-proof db-apply tests, db-gate exit fix, P2.5 committed
 
@@ -453,7 +518,7 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
 ### 2026-09-29 (P2.4) — Playwright wiring: e2e against the production build
 
 - Did: `@playwright/test` 1.63 + chromium; `playwright.config.ts`; `e2e/support/{pages-server.mjs,fixtures.ts,live-env.mjs,
-  run-live.mjs,tsconfig.json}`; `e2e/local/{matrix,deep-links}.spec.ts` (6); scripts `e2e`/`e2e:live`; CI e2e step
+run-live.mjs,tsconfig.json}`; `e2e/local/{matrix,deep-links}.spec.ts` (6); scripts `e2e`/`e2e:live`; CI e2e step
   (cached headless shell, E2E_PREBUILT=1); `.gitignore`; CLAUDE.project.md §8 + kit apply (check: canonical). Chain green
   incl. `npm run e2e` 6/6 (~7 s). Mutations RED: no 404.html, filter off, missing asset, app console.error, stray server.
   No live Supabase. Not pushed (the workflow edit needs the gh `workflow` scope).
@@ -830,6 +895,10 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
 - **2026-09-29:** onboarding RPCs take the caller only from `auth.uid()`. The personal workspace = the oldest the caller
   created and owns. The import dedupe key is its `audit_log` row (per workspace). Advisory locks use the two-int4 keyspace
   (DECISIONS.md P2.5).
+- **2026-09-29:** the P1.3 guard allows ONE more auth form, a READ `from`/`join auth.users` written as code; writes,
+  row locks, views/copies and dynamic-SQL reads stay forbidden (DECISIONS.md "P1.3 allow-list extension", `325f029`).
+- **2026-09-29:** invites bind to the caller's CONFIRMED `auth.users.email` and to the inviter's CURRENT
+  authority; only an owner grants, changes or removes the owner role; the last owner stays (DECISIONS.md P2.6).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

@@ -384,7 +384,7 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   the dist/ that `check:bundle` just scanned and that is uploaded to Pages. Locally the webServer always builds (a
   stale dist/ can never be under test). Both paths blank `VITE_SUPABASE_*`, so the build is local-only.
 - **Only the chromium headless shell is installed in CI**, cached per Playwright version.
-- _*The `live` project exists only when every E2E_* name is set,_* and `npm run e2e:live` without them prints the
+- _\*The `live` project exists only when every E2E_* name is set,_* and `npm run e2e:live` without them prints the
   missing names and exits 0 (a skip, not a pass). A bare `npx playwright test` can therefore never reach the shared
   project by accident. The names are in `e2e/support/live-env.mjs`; P2.9/P2.14 may add to them.
 - **The e2e typecheck runs inside `npm run e2e` (`e2e/support/tsconfig.json`)** because the tsconfig files were out of
@@ -424,3 +424,50 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
 - **`scripts/db-gate.mjs` never calls `process.exit()`.** `runGate(db)` returns 0/1, `main()` closes PGlite in a
   `finally`, and `process.exitCode` is set once. The whole body was re-indented into the function (`git diff -w` is
   ~30 lines); the checks themselves are unchanged.
+
+## 2026-09-29 — P2.6 membership and invite RPCs: confirmed email, inviter re-check, no audit, delete = revoke
+
+- **accept_invite also requires `auth.users.email_confirmed_at`.** PLAN says only "email equals". In the SHARED
+  project Themis does not control the "confirm email" setting (Hephaestus's), and with it off a password sign-up gets
+  a session unconfirmed, so anyone could register the invitee's address and take the invite. Magic-link and Google
+  sign-ins are confirmed, so the real flow is unaffected. The lead may overrule; it is one condition.
+- **An invite is only as good as its inviter's CURRENT authority.** Accept re-checks that `created_by` still holds
+  owner|admin (owner for an owner invite). A removed or demoted admin's pending invites therefore die with their role,
+  and a deleted inviter (`on delete set null`) voids them.
+- **Revoke = delete the pending row.** `invites` has no revoked state and P1.4's exact column set pins it; an accepted
+  invite is kept as history and cannot be revoked. Unknown and not-yours ids give the same error (no cross-tenant probe).
+- **An existing member cannot accept** (`already_member`); an invite never changes a role, so role changes stay on the
+  set_member_role path with its rules.
+- **An admin cannot change or remove an owner, nor grant owner.** Admins may manage admins, editors and viewers,
+  including themselves (self-demotion, self-removal). There is no "leave" for editors and viewers yet (not in PLAN).
+- **No audit rows here.** PLAN P4.2 audits membership role changes by trigger, which will cover these RPCs; rows
+  written now would be doubled then (same reasoning as P2.5).
+- **Last-owner safety is serialised by `pg_advisory_xact_lock(int4, int4)`** keyed on the workspace (the P2.5
+  keyspace rule), taken by set_member_role, remove_member and accept_invite, and the caller's own role is read after it.
+- **Token = 64 lower-hex from two `gen_random_uuid()`** (core, no pgcrypto; 244 random bits), hashed with core
+  `sha256()`. No extension is needed in the shared project.
+- **Reading `auth.users` needs a guard allow-list entry** (DECISIONS P1.3 anticipated this); the builder did not make it
+  because the file is outside P2.6's scope. BUILD_LOG B4 has the proposed line and its proof. The lead authorised it;
+  it landed as `325f029` (next entry).
+
+## 2026-09-29 — P1.3 allow-list extension: a READ of auth.users, written as code (B4)
+
+- **One new allowed auth form: `from auth.users` / `join auth.users`**, so an RPC can read the caller's own row
+  (P2.6 `accept_invite` compares `auth.users.email` and `email_confirmed_at`). `references auth.users` and `auth.uid()`
+  are unchanged; `auth.jwt()` and every other auth table stay forbidden. P1.3 said to extend the list "in that
+  migration's task"; the lead authorised the guard files for B4 explicitly because P2.6's file list was the migration only.
+- **Stricter than the one-line regex proposed in BUILD_LOG P2.6.** On top of "`from`/`join`, not `delete from`":
+  (1) the reference must be CODE: `maskLiterals` blanks single-quoted/E'' literals and dollar strings nested in a body,
+  so a read spliced into dynamic SQL (`'delete ' || 'from auth.users'`, `$q$ from auth.users $q$`) is red; (2) the
+  keyword must start after whitespace or `(` (a `$q$from` splice is red); (3) no `for update|no key update|share|key
+share` later in the same statement (a row lock on a shared row blocks Hephaestus); (4) not in a statement that starts
+  with `create [materialized] view` / `create table … as` / `copy` (that publishes or exports Hephaestus's users).
+  `using auth.users` and comma joins are red too; `join` is the one way to write a second-table read. Each rule has a
+  mutation that turns a test red (BUILD_LOG).
+- **Residual, unchanged by B4:** a target built by `format()` (`format('delete from %I.%I', 'au' || 'th', 'users')`)
+  is invisible to a text guard and, inside a function body, to db:gate too. It is pinned as a known blind spot in
+  `check-migrations.test.ts`; review is the control (BRAIN §5).
+- **The prove-red archive gains `auth-users-write-in-function`**: an allowed read and an UPDATE of auth.users in one
+  definer body. The gate must stop at the guard on the UPDATE line, which proves the widening did not open writes.
+- **Shim: `auth.users.email_confirmed_at timestamptz default now()`.** Real Supabase has the column with no default;
+  the shim's default keeps `seedFixture`'s users confirmed without editing the fixture. Unconfirmed-path tests set null.

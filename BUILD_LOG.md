@@ -1292,3 +1292,106 @@ lines.
 - Then P2.5 committed as `feat: onboarding RPCs bootstrap_me and import_local_decision (P2.5)`.
 
 **Next:** P2.6; P2.7 turns the P2.5 scratch probe's cases into gate lines.
+
+## 2026-09-29 — P2.6 membership and invite RPCs (builder): written and proven, BLOCKED on scope, NOT committed
+
+**Status: BLOCKED (B4). The migration is written and behaves correctly, but the chain is red for a reason outside
+P2.6's declared file, so nothing is committed.** The file sits UNTRACKED in the working tree:
+`supabase/migrations/20260929010000_themis_invites.sql`. While it is there, `db:check`, `db:gate` and 18 Vitest tests
+are red for every agent in this checkout; move it aside if another task must run first.
+
+**What the file does** (5 functions, SECURITY DEFINER, `search_path = ''`, fully-qualified, the caller only from
+`auth.uid()`, EXECUTE revoked from public/anon/service_role and granted to authenticated):
+
+- `create_invite(ws, email, role) → text`: owner|admin only; an admin cannot invite as owner. The email is trimmed and
+  lower-cased. The raw token is 64 lower-hex characters (two `gen_random_uuid()`, 244 random bits) and is returned
+  ONCE; the row stores only `encode(sha256(token), 'hex')`. It expires in 7 days.
+- `accept_invite(token) → uuid` (the workspace): the invite must exist, the caller's `auth.users.email` must equal the
+  invite email AND be confirmed (`email_confirmed_at`), the invite must be unaccepted and unexpired, and its creator
+  must still hold the authority it grants (owner for an owner invite, else owner|admin). Refuses an existing member.
+  Creates the membership and sets `accepted_at`. The invite row is locked `for update`.
+- `revoke_invite(invite_id)`: owner|admin; only an owner revokes an owner invite; deletes a PENDING invite. "Unknown"
+  and "not in a workspace you manage" give the same error.
+- `set_member_role(ws, member_id, role)` / `remove_member(ws, member_id)`: owner|admin; an admin cannot grant owner
+  (itself included) or change/remove an owner; the last owner can be neither demoted nor removed. Serialised per
+  workspace by `pg_advisory_xact_lock(hashtext('themis.memberships'), hashtext(ws))`, and the caller's role is read
+  after the lock.
+- No audit rows (PLAN P4.2 audits role changes by trigger; writing them here would double them). No schema change.
+
+**BLOCKER B4: the P1.3 static guard forbids reading `auth.users`, which the P2.6 acceptance criterion requires.**
+`scripts/check-migrations.mjs:141` allows only `references auth.users` and `auth.uid()`. `accept_invite` must compare
+"the signed-in user's `auth.users.email`", so line 137 of the migration (`from auth.users u`) is flagged
+`forbidden-schema`. There is no honest in-scope alternative: `auth.jwt()` is flagged too, the JWT `email` claim is not
+`auth.users.email` (stale after an email change, no confirmation state, and the gate shim does not set it), and
+building the name from strings to slip past the guard is exactly what BRAIN §5 forbids. DECISIONS P1.3 already says
+the allow-list is extended "in that migration's task", but P2.6's declared file list is the migration only, so the
+builder stopped instead of widening scope.
+
+- **Proposed fix (scope `scripts/check-migrations.mjs` + `scripts/check-migrations.test.ts`),** one line after line
+  141: `if (schema === 'auth' && obj === 'users' && /\b(?:join|(?<!\bdelete\s+)from)\s*$/i.test(before)) continue`
+  (a READ of auth.users via `from`/`join`; `delete from` stays red). Proven in a scratch copy of the scripts: `select
+… from auth.users` and `join auth.users` pass; `delete from`, `update`, `insert into`, `alter table` on auth.users and
+  `auth.jwt()` stay RED (9/9). With that line, on the real 8-file archive: db:check green, **GATE PASSED (292 PASS,
+  12 functions pinned, anon/PUBLIC EXECUTE on none)**, prove-red **34/34** + control green.
+- **Also needed for P2.7 (scope `scripts/db-gate/shim.mjs`):** the shim's `auth.users` has no `email_confirmed_at`
+  (real Supabase has it). Add `email_confirmed_at timestamptz` to the shim and set it in `seedFixture` for the users
+  that accept invites; the probe does this with an `alter table` after `installShim`. Without it `accept_invite`
+  errors "column does not exist" in PGlite. P2.7's declared files do not include the shim either.
+
+**Evidence (no live Supabase):**
+
+- Scratch probe `probe-p26.mjs` (the real archive applied twice with the guard bypassed, the real shim + `email_confirmed_at`,
+  the real `seedFixture` and harness): **100/100 PASS**. Covers the catalogue (definer, pinned path, EXECUTE only for
+  authenticated) for all 5, anon refused on all 5, service_role refused; create (token format, sha256 == token_hash,
+  the raw token stored nowhere, lower-casing, expiry 7 d ± 0.001, admin/owner/editor/viewer/other-tenant/loner, bad
+  role/email/null); accept (wrong email, unconfirmed email, expired, reused, unknown, malformed, null, the fixture's
+  hash used as a token, already a member, inviter demoted since, an owner invite whose inviter is now only admin, the
+  happy path to editor and to owner); revoke (editor, other tenant, unknown, admin vs owner invite, accepted, revoked
+  then accepted); set_member_role and remove_member (admin self-promotion, admin promotes to owner, admin demotes or
+  removes owner, last owner demote/remove, two owners, no-op, bad role, non-member, other tenant, editor/viewer/loner);
+  the direct INSERT/UPDATE paths are still refused; fixture untouched afterwards.
+- Mutations on archive copies, each RED: email check removed (2 FAIL, then the probe crashed on the consumed invite),
+  last-owner check removed (5 FAIL), admin-owner rule removed (4 FAIL), expiry check removed (2 FAIL), anon granted
+  accept_invite (2 FAIL).
+- Chain in the repo with the file present: lint ✔ · typecheck ✔ · build ✔ · check:bundle OK (11 files) · e2e 6/6 ·
+  **db:check RED** (the one `auth.users` read) · **db:gate RED** (guard first, nothing applied) · **npm test 18 red**
+  (`check-migrations.test.ts` "passes the real archive", plus db-apply and db-snapshot tests that run the guard in-process
+  on the real archive). prove-red was run on the scratch copy only (it needs the gate green).
+
+**Next:** the lead authorises the guard line + a test for it (and the shim column for P2.7), or rules otherwise
+(e.g. drop the confirmed-email requirement — it does not remove the guard problem, only the shim one). Then re-run the
+full chain and commit as `feat: membership and invite RPCs (P2.6)`. The probe for the test-writer is
+`C:\Users\Master\AppData\Local\Temp\claude\D--projects-zeus\69c65100-75a6-4bac-9e50-e8d2b0a63b94\scratchpad\p26\probe-p26.mjs`
+(with `node_modules` junctioned to the repo's; note `s.sudo()` restores the actAs identity, so re-set the caller after it).
+
+## 2026-09-29 — B4 closed + P2.6 committed (builder, lead-authorised guard scope)
+
+**Status: DONE. B4 closed by `325f029`; P2.6 committed as `feat: membership and invite RPCs (P2.6)`. Not pushed; no live
+Supabase.**
+
+- `325f029` fix(guard): allow reads of auth.users (B4). `scripts/check-migrations.mjs`: new `maskLiterals` and
+  `isAuthUsersRead`. The one new allowed form is a READ `from auth.users` / `join auth.users` written as code. It is
+  stricter than the proposed one-liner: string/dynamic-SQL splices, `$q$from` glue, `for update|share`, `create view/
+table … as` and `copy` are all red (DECISIONS.md "P1.3 allow-list extension"). `scripts/check-migrations.test.ts`
+  39 → 80 tests. `scripts/db-gate/shim.mjs`: `auth.users.email_confirmed_at timestamptz default now()`.
+  `scripts/db-gate-prove-red.mjs`: the new sabotage `auth-users-write-in-function` goes RED on
+  `29991231235959_themis_zz_sabotage.sql:5  [forbidden-schema]` (the UPDATE line, 1 FAIL line, so the read on line 4
+  was not flagged), and the gate stops at the guard.
+- Fooling attempts pinned as RED tests: delete from (upper case/newline/comment/only/quoted/CTE), `using`, update (with
+  alias + from), insert…select, merge into, alter, truncate (± table), lock, grant, comma join, for update/share/no key
+  update, create table as, materialized view, view, copy, auth.identities, join auth.sessions, an UPDATE in a PL/pgSQL body,
+  six dynamic-SQL splices (single-quoted, `'delete ' || 'from …'`, split with the space inside, nested `$q$`, built across
+  statements, E'' with an escaped quote), and `$q$from` glued. Found and pinned rather than fixed (both pre-existing,
+  BRAIN §5): `execute format('delete from %I.%I', 'au' || 'th', 'users')` passes the guard; a body on the same line as
+  `set search_path = ''` trips the search_path rule.
+- Mutations of the new code, each RED in the test file: no masking (1 red), no `delete` lookbehind (5), no
+  create/copy rule (5), no row-lock rule (3), no keyword boundary (1).
+- The migration `20260929010000_themis_invites.sql` is unchanged from the P2.6 builder's version.
+
+**Chain (the P2.6 file present, after `325f029`):** lint ✔ · typecheck ✔ · `npm test` 769/769 (12 files) · db:check PASS
+(8 migrations) · db:gate GATE PASSED (292 PASS, search_path pinned on 12 functions) · prove-red **35/35** RED + control
+GREEN (21 s) · build ✔ · check:bundle OK (11 files) · e2e 6/6. The committed archive alone (7 files, `git show HEAD:`
+copies in a scratch dir) also passes db:check and db:gate with the new guard/shim, so `325f029` is green on its own.
+
+**Next:** P2.7: the P2.5 and P2.6 probe cases become db:gate lines (the probe path is in the P2.6 entry above; set
+`email_confirmed_at = null` for the unconfirmed case). CHECKPOINT P1-LIVE is still open.
