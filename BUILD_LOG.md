@@ -1395,3 +1395,61 @@ copies in a scratch dir) also passes db:check and db:gate with the new guard/shi
 
 **Next:** P2.7: the P2.5 and P2.6 probe cases become db:gate lines (the probe path is in the P2.6 entry above; set
 `email_confirmed_at = null` for the unconfirmed case). CHECKPOINT P1-LIVE is still open.
+
+## 2026-09-29 — P2.7 (test-writer): gate extension for the P2 RPCs
+
+**Status: DONE, committed locally as `test: gate lines and sabotages for the P2 RPCs (P2.7)`. Not pushed; no live
+Supabase. No product code or migration changed.**
+
+Files (PLAN P2.7 scope only): `scripts/db-gate.mjs`, `scripts/db-gate/leak-matrix.mjs`, `scripts/db-gate-prove-red.mjs`.
+
+- **`leak-matrix.mjs`:** `RPC_USERS` (invitee: confirmed, mixed-case `Invitee@Example.com`; unverified:
+  `email_confirmed_at` set to NULL **explicitly**, because the shim's column defaults to now(); owner2), `CLIENT_RPCS`
+  (the 7 signatures plus a well-formed call each), and `addRpcUsers(s)`. The extra users are added inside each check's
+  rolled-back actAs, never to `seedFixture`, so the leak matrix and `db-tenancy.test.ts` are unchanged.
+- **`db-gate.mjs`: new section "client RPCs", 103 new PASS lines (292 → 395).** Every check runs in its own rolled-back
+  actAs over the committed fixture. It switches caller with `callAs` and re-sets the caller after every `s.sudo` (BRAIN §5).
+  - catalogue (21): per RPC, SECURITY DEFINER + `search_path=""` + EXECUTE for authenticated and NOT anon/service_role/
+    PUBLIC; functional `anon cannot EXECUTE <rpc>` and `service_role cannot EXECUTE <rpc>` for all 7.
+  - bootstrap_me (5): a fresh user gets an owned workspace visible via RLS; **twice → same id, +1 profile, +1 workspace**;
+    an invited-only viewer gets their own workspace and stays viewer in A; A's owner gets A back with nothing new and
+    their profile kept; no JWT subject → not_authenticated.
+  - import_local_decision (39): the happy path with exact rows and one audit row; **same key twice → one decision**; the
+    same key from another editor+ with a different payload → the first id; **UA into B → refused, B's decisions/options/
+    criteria/scores/audit counts unchanged**; UB into A with A's used key → refused and A's id not in the error; viewer,
+    non-member, null and unknown ws refused; the same key in B → a separate decision; **28 bad payloads, one line each**
+    + **0 residue across all five tables**; a minimal payload, `scores: null`, and upper-case key dedupe; a deleted
+    import re-imports.
+  - create_invite (9): a 64-hex token; **token_hash = sha256(token) and the raw token appears nowhere in the row**;
+    lower-case/trim, role, created_by, 7-day expiry, distinct tokens; admin → editor/admin OK; **admin → owner refused**;
+    **editor**, viewer, B's owner and a non-member refused with nothing stored; cross-workspace/null refused; bad args; a
+    direct INSERT is still refused.
+  - accept_invite (11): the happy path (invitee cannot read invites directly, accepted_at set); **wrong email →
+    invite_email_mismatch**; **unconfirmed → email_not_verified**; **expired → invite_expired**; **reused →
+    invite_used**; a used invite cannot re-admit a removed member (new, stronger than the probe); unknown/malformed/null
+    token and a stored hash as token → invite_invalid; already_member; demoted inviter; an owner invite whose inviter is
+    now an admin; an owner's owner invite makes an owner.
+  - revoke_invite (4), set_member_role (7), remove_member (6): editor and cross-tenant revoke → invite_not_found with the
+    row kept; an owner invite can only be revoked by an owner; a revoked invite cannot be accepted; accepted → invite_used;
+    **admin self-promotion to owner refused**; admin → owner and admin demoting the owner refused; **last owner demote/
+    remove → last_owner**; with two owners either one steps down or leaves; non-members, editors, viewers and cross-tenant
+    callers are refused; a direct UPDATE of memberships.role is refused.
+  - a final line: after all checks the committed fixture is unchanged (5 memberships, 2 invites, 2 workspaces,
+    3 decisions, 0 extra auth users).
+- **`db-gate-prove-red.mjs`: 20 new sabotages (35 → 55),** one or more for every new check kind. `mutateRpc(file, fn,
+  from, to)` extracts the REAL `create or replace function` statement from the committed migration (LF-normalised) and
+  swaps exactly ONE occurrence. If `from` is not found exactly once, it exits 2 at startup (verified with a stale
+  string), so an edited migration cannot silently turn a sabotage into a no-op. New ids: rpc-execute-service-role,
+  rpc-execute-anon, rpc-security-invoker, bootstrap-not-idempotent, import-no-dedupe, import-not-atomic (returns on a bad
+  score, keeping partial rows), import-no-role-check, invite-stores-raw-token, invite-by-editor, invite-owner-by-admin,
+  **accept-no-email-check (tagged PLAN P2.7)**, accept-no-confirmed-check, accept-no-expiry-check, accept-no-used-check,
+  accept-no-inviter-recheck, revoke-no-authz, set-role-admin-grants-owner, set-role-no-last-owner, remove-no-last-owner,
+  remove-owner-by-admin. Each went RED on its expected `FAIL  <line>` (anchored regexes). The summary now prints the tags
+  self-describingly (`PLAN P1.9 a, …, P2.7`).
+- Not ported: concurrency (the advisory locks). A single-connection PGlite cannot race two sessions; it stays a review item.
+
+**Chain:** lint ✔ · typecheck ✔ · `npm test` 769/769 (12 files, unchanged: no Vitest was in P2.7's scope) · db:check PASS
+(8 migrations) · db:gate GATE PASSED (395 PASS) · prove-red **55/55 RED + control GREEN** (~39 s, 8 jobs) · build ✔ ·
+check:bundle OK (11 files) · e2e 6/6. No bug found in the P2.5/P2.6 functions: every probe case held.
+
+**Next:** P2.8 (the auth-settings snapshot). CHECKPOINT P1-LIVE is still open.

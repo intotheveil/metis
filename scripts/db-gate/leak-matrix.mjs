@@ -185,6 +185,77 @@ export async function seedFixture(db) {
   `)
 }
 
+// --- P2.7 RPC fixture --------------------------------------------------------------------------
+// The P2.5/P2.6 RPC checks need three more signed-up users than seedFixture has. They are NOT in the
+// committed fixture (the leak matrix and the Vitest suite count auth.users-backed rows): each RPC
+// check adds them inside its own rolled-back actAs with `addRpcUsers(s)`.
+//   invitee     confirmed, mixed-case address (accept compares lower-cased)
+//   unverified  email_confirmed_at NULL, set EXPLICITLY: the shim's column defaults to now(), real
+//               Supabase's has no default (BRAIN §5)
+//   owner2      a second owner for the two-owner paths
+export const RPC_USERS = Object.freeze({
+  invitee: '00000000-0000-4000-8000-0000000000d1',
+  unverified: '00000000-0000-4000-8000-0000000000d2',
+  owner2: '00000000-0000-4000-8000-0000000000d3',
+})
+export const INVITEE_EMAIL = 'invitee@example.com'
+export const UNVERIFIED_EMAIL = 'unverified@example.com'
+
+/**
+ * Every client RPC of P2.5/P2.6, by regprocedure signature: SECURITY DEFINER, `search_path = ''`,
+ * EXECUTE for authenticated only. `call` is a well-formed call anon/service_role must be refused.
+ * @type {readonly { name: string, sig: string, call: string }[]}
+ */
+export const CLIENT_RPCS = Object.freeze([
+  { name: 'bootstrap_me', sig: 'themis.bootstrap_me()', call: `select themis.bootstrap_me()` },
+  {
+    name: 'import_local_decision',
+    sig: 'themis.import_local_decision(uuid,jsonb)',
+    call: `select themis.import_local_decision('${WA}', '{}'::jsonb)`,
+  },
+  {
+    name: 'create_invite',
+    sig: 'themis.create_invite(uuid,text,text)',
+    call: `select themis.create_invite('${WA}', 'x@example.com', 'viewer')`,
+  },
+  {
+    name: 'accept_invite',
+    sig: 'themis.accept_invite(text)',
+    call: `select themis.accept_invite(repeat('a', 64))`,
+  },
+  {
+    name: 'revoke_invite',
+    sig: 'themis.revoke_invite(uuid)',
+    call: `select themis.revoke_invite(gen_random_uuid())`,
+  },
+  {
+    name: 'set_member_role',
+    sig: 'themis.set_member_role(uuid,uuid,text)',
+    call: `select themis.set_member_role('${WA}', '${U.viewerA}', 'editor')`,
+  },
+  {
+    name: 'remove_member',
+    sig: 'themis.remove_member(uuid,uuid)',
+    call: `select themis.remove_member('${WA}', '${U.viewerA}')`,
+  },
+])
+
+/**
+ * Add RPC_USERS to auth.users inside the current (rolled-back) actAs, as the superuser. `s.sudo`
+ * restores the actAs identity afterwards (BRAIN §5): re-set any other caller after it.
+ * @param {Session} s
+ */
+export const addRpcUsers = (s) =>
+  s.sudo(() =>
+    s.rows(
+      `insert into auth.users (id, email, email_confirmed_at) values
+         ($1, 'Invitee@Example.com', now()),
+         ($2, $4, null),
+         ($3, 'owner2@example.com', now())`,
+      [RPC_USERS.invitee, RPC_USERS.unverified, RPC_USERS.owner2, UNVERIFIED_EMAIL],
+    ),
+  )
+
 /**
  * Everything Themis must never change in Hephaestus's schemas (public, auth, supabase_migrations):
  * relations, policies, functions and triggers. Take it before AND after the archive is applied.

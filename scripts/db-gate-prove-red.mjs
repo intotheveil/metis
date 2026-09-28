@@ -21,7 +21,15 @@
 //   --only  run just these sabotage ids (plus the control), for debugging one sabotage
 
 import { spawn } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { availableParallelism, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,10 +46,45 @@ const RED_LINE = /^(FAIL|GATE FAILED|APPLY FAILED|MIGRATION GUARD FAILED)/
  * One sabotage: SQL appended to a copy of the archive, and the FAIL line(s) it must produce.
  * Each `expect` item must match at least one of the gate's RED lines (`RED_LINE`: a `FAIL  …` check
  * line, or the `GATE FAILED` / `APPLY FAILED` / `MIGRATION GUARD FAILED` verdict; a string is a substring
- * match, a RegExp is tested against the whole line). `plan` names the PLAN.md P1.9 letter it covers.
- * The P1.8 BUILD_LOG list (mutations 01–28) is the source of most of these.
+ * match, a RegExp is tested against the whole line). `plan` names the PLAN.md item it covers
+ * (a letter = P1.9 a–f). The P1.8 BUILD_LOG list (mutations 01–28) is the source of most of the P1
+ * ones; the P2.7 ones re-create a real RPC body with one check removed (`mutateRpc`).
  * @typedef {{ id: string, plan?: string, what: string, sql: string, expect: (string | RegExp)[] }} Sabotage
  */
+
+/**
+ * The `create or replace function themis.<name>(…) … $fn$;` statement of a client RPC, read from the
+ * committed archive (LF-normalised), with `from` replaced by `to`. A P2.7 sabotage is the REAL body
+ * with ONE check removed, re-created after the archive (create or replace keeps the grants), so it
+ * cannot drift from the migration. `from` must occur exactly once in that body; otherwise prove-red
+ * stops at startup (exit 2), so an edited migration cannot turn a sabotage into a silent no-op.
+ * @param {string} file  a migration file name in the archive
+ * @param {string} name  the function name in schema themis
+ * @param {string} from
+ * @param {string} to
+ */
+const mutateRpc = (file, name, from, to) => {
+  const text = readFileSync(path.join(ARCHIVE, file), 'utf8').replace(/\r\n/g, '\n')
+  const start = text.indexOf(`create or replace function themis.${name}(`)
+  const end = start < 0 ? -1 : text.indexOf('\n$fn$;', start)
+  if (start < 0 || end < 0) {
+    console.log(
+      `prove-red: cannot build the sabotages — mutateRpc: themis.${name} not found in ${file}`,
+    )
+    process.exit(2)
+  }
+  const body = text.slice(start, end + '\n$fn$;'.length)
+  const hits = body.split(from).length - 1
+  if (hits !== 1) {
+    console.log(
+      `prove-red: cannot build the sabotages — mutateRpc: ${JSON.stringify(from)} occurs ${hits}× in themis.${name} (need 1)`,
+    )
+    process.exit(2)
+  }
+  return body.replace(from, () => to)
+}
+const ONBOARDING = '20260929000000_themis_onboarding.sql'
+const INVITES = '20260929010000_themis_invites.sql'
 
 /** @type {Sabotage[]} */
 const SABOTAGES = [
@@ -393,6 +436,229 @@ create policy options_select on themis.options for select to authenticated
     sql: `alter table themis.no_such_table add column x int;`,
     expect: [`apply ${SABOTAGE_FILE}`, 'APPLY FAILED'],
   },
+
+  // --- P2.7: the client RPCs (P2.5 onboarding, P2.6 invites and membership) ----------------------
+  // Catalogue kind: definer / search_path / EXECUTE per RPC, and the functional anon/service refusal.
+  {
+    id: 'rpc-execute-service-role',
+    what: 'grant execute on import_local_decision to service_role',
+    sql: `grant execute on function themis.import_local_decision(uuid, jsonb) to service_role;`,
+    expect: [
+      /^FAIL {2}themis\.import_local_decision\(uuid,jsonb\): SECURITY DEFINER, search_path='', EXECUTE for authenticated only/,
+      /^FAIL {2}service_role cannot EXECUTE import_local_decision/,
+    ],
+  },
+  {
+    id: 'rpc-execute-anon',
+    what: 'grant execute on accept_invite to anon',
+    sql: `grant execute on function themis.accept_invite(text) to anon;`,
+    expect: [
+      /^FAIL {2}themis\.accept_invite\(text\): SECURITY DEFINER/,
+      /^FAIL {2}anon cannot EXECUTE accept_invite/,
+    ],
+  },
+  {
+    id: 'rpc-security-invoker',
+    what: 'bootstrap_me() switched to SECURITY INVOKER',
+    sql: `alter function themis.bootstrap_me() security invoker;`,
+    expect: [
+      /^FAIL {2}themis\.bootstrap_me\(\): SECURITY DEFINER/,
+      /^FAIL {2}bootstrap_me: a fresh user gets a personal workspace/,
+    ],
+  },
+  // bootstrap_me: idempotency.
+  {
+    id: 'bootstrap-not-idempotent',
+    what: 'bootstrap_me creates a new workspace on every call (the lookup of the personal one ignored)',
+    sql: mutateRpc(ONBOARDING, 'bootstrap_me', 'if ws is null then', 'if true then'),
+    expect: [
+      /^FAIL {2}bootstrap_me: called twice → the same workspace, one profile, one new workspace/,
+      /^FAIL {2}bootstrap_me: an existing owner \(A's\) gets A back/,
+    ],
+  },
+  // import_local_decision: dedupe, atomicity, authorization.
+  {
+    id: 'import-no-dedupe',
+    what: 'import_local_decision never returns the earlier import (no dedupe by client_import_id)',
+    sql: mutateRpc(ONBOARDING, 'import_local_decision', 'if dec is not null then', 'if false then'),
+    expect: [
+      /^FAIL {2}import_local_decision: the same client_import_id twice → one decision/,
+      /^FAIL {2}import_local_decision: a minimal payload .* upper-case key dedupes/,
+    ],
+  },
+  {
+    id: 'import-not-atomic',
+    what: 'import_local_decision returns (keeping its partial writes) on an out-of-range score',
+    sql: mutateRpc(
+      ONBOARDING,
+      'import_local_decision',
+      `raise exception 'invalid_payload: a score must be an integer 1..5' using errcode = '22023';`,
+      'return dec;',
+    ),
+    expect: [
+      /^FAIL {2}import_local_decision refuses: score 6/,
+      /^FAIL {2}import_local_decision: the refused payloads left 0 residue/,
+    ],
+  },
+  {
+    id: 'import-no-role-check',
+    what: 'import_local_decision without the editor|admin|owner check (any signed-in user, any workspace)',
+    sql: mutateRpc(
+      ONBOARDING,
+      'import_local_decision',
+      `if ws is null or not themis.has_role(ws, array['owner', 'admin', 'editor']) then`,
+      'if ws is null then',
+    ),
+    expect: [
+      /^FAIL {2}import_local_decision: UA into B → not_authorized, B unchanged/,
+      /^FAIL {2}import_local_decision: A's viewer, a non-member and a null\/unknown workspace are refused/,
+    ],
+  },
+  // create_invite: token storage and who may invite.
+  {
+    id: 'invite-stores-raw-token',
+    what: 'create_invite stores the raw token in token_hash instead of its sha256',
+    sql: mutateRpc(
+      INVITES,
+      'create_invite',
+      `pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(tok, 'UTF8')), 'hex'),`,
+      'tok,',
+    ),
+    expect: [/^FAIL {2}create_invite: the row stores only sha256\(token\) hex/],
+  },
+  {
+    id: 'invite-by-editor',
+    what: 'create_invite lets an editor invite',
+    sql: mutateRpc(
+      INVITES,
+      'create_invite',
+      `if my_role is null or my_role not in ('owner', 'admin') then`,
+      `if my_role is null or my_role not in ('owner', 'admin', 'editor') then`,
+    ),
+    expect: [/^FAIL {2}create_invite: an editor, a viewer, B's owner and a non-member are refused/],
+  },
+  {
+    id: 'invite-owner-by-admin',
+    what: 'create_invite lets an admin invite an owner',
+    sql: mutateRpc(
+      INVITES,
+      'create_invite',
+      `if create_invite.role = 'owner' and my_role <> 'owner' then`,
+      'if false then',
+    ),
+    expect: [/^FAIL {2}create_invite: an admin cannot invite an owner/],
+  },
+  // accept_invite: every refusal the invite depends on.
+  {
+    id: 'accept-no-email-check',
+    plan: 'P2.7',
+    what: 'accept_invite without the email check (anyone holding the token joins)',
+    sql: mutateRpc(
+      INVITES,
+      'accept_invite',
+      'if my_email is distinct from inv.email then',
+      'if false then',
+    ),
+    expect: [/^FAIL {2}accept_invite: a user with the WRONG email → invite_email_mismatch/],
+  },
+  {
+    id: 'accept-no-confirmed-check',
+    what: 'accept_invite without the email_confirmed_at check',
+    sql: mutateRpc(INVITES, 'accept_invite', 'if confirmed is null then', 'if false then'),
+    expect: [/^FAIL {2}accept_invite: an UNCONFIRMED email \(email_confirmed_at null\)/],
+  },
+  {
+    id: 'accept-no-expiry-check',
+    what: 'accept_invite without the expiry check',
+    sql: mutateRpc(
+      INVITES,
+      'accept_invite',
+      'if inv.expires_at <= pg_catalog.now() then',
+      'if false then',
+    ),
+    expect: [/^FAIL {2}accept_invite: an EXPIRED invite → invite_expired/],
+  },
+  {
+    id: 'accept-no-used-check',
+    what: 'accept_invite without the accepted_at check (an invite works more than once)',
+    sql: mutateRpc(
+      INVITES,
+      'accept_invite',
+      'if inv.accepted_at is not null then',
+      'if false then',
+    ),
+    expect: [
+      /^FAIL {2}accept_invite: a REUSED invite → invite_used/,
+      /^FAIL {2}accept_invite: a used invite cannot re-admit a member removed since/,
+    ],
+  },
+  {
+    id: 'accept-no-inviter-recheck',
+    what: "accept_invite without the re-check of the inviter's current authority",
+    sql: mutateRpc(
+      INVITES,
+      'accept_invite',
+      'if inv.created_by is null or not exists (',
+      'if false and exists (',
+    ),
+    expect: [
+      /^FAIL {2}accept_invite: the inviter demoted since → invite_invalid/,
+      /^FAIL {2}accept_invite: an owner invite whose inviter is now only admin/,
+    ],
+  },
+  // revoke_invite: who may revoke.
+  {
+    id: 'revoke-no-authz',
+    what: 'revoke_invite without the owner|admin-of-that-workspace check',
+    sql: mutateRpc(
+      INVITES,
+      'revoke_invite',
+      `if not found or my_role is null or my_role not in ('owner', 'admin') then`,
+      'if false then',
+    ),
+    expect: [/^FAIL {2}revoke_invite: an editor, and B's owner \(cross-tenant\)/],
+  },
+  // set_member_role / remove_member: the owner role and the last owner.
+  {
+    id: 'set-role-admin-grants-owner',
+    what: 'set_member_role lets an admin grant owner (itself included)',
+    sql: mutateRpc(
+      INVITES,
+      'set_member_role',
+      `if my_role <> 'owner' and (set_member_role.role = 'owner' or their_role = 'owner') then`,
+      `if my_role <> 'owner' and their_role = 'owner' then`,
+    ),
+    expect: [
+      /^FAIL {2}set_member_role: an admin self-promoting to owner → not_authorized/,
+      /^FAIL {2}set_member_role: an admin promoting an editor to owner/,
+    ],
+  },
+  {
+    id: 'set-role-no-last-owner',
+    what: 'set_member_role without the last-owner check',
+    sql: mutateRpc(INVITES, 'set_member_role', ') <= 1 then', ') < 0 then'),
+    expect: [
+      /^FAIL {2}set_member_role: the LAST owner demoting self → last_owner/,
+      /^FAIL {2}set_member_role: with two owners one may step down; the remaining owner cannot/,
+    ],
+  },
+  {
+    id: 'remove-no-last-owner',
+    what: 'remove_member without the last-owner check',
+    sql: mutateRpc(INVITES, 'remove_member', ') <= 1 then', ') < 0 then'),
+    expect: [/^FAIL {2}remove_member: the LAST owner cannot remove self → last_owner/],
+  },
+  {
+    id: 'remove-owner-by-admin',
+    what: 'remove_member lets an admin remove an owner',
+    sql: mutateRpc(
+      INVITES,
+      'remove_member',
+      `if their_role = 'owner' and my_role <> 'owner' then`,
+      'if false then',
+    ),
+    expect: [/^FAIL {2}remove_member: an admin cannot remove the owner/],
+  },
 ]
 
 // --- CLI ----------------------------------------------------------------------------------------
@@ -587,12 +853,15 @@ for (const v of results) {
 const wall = ((performance.now() - t0) / 1000).toFixed(1)
 const red = results.filter((v) => v.id !== 'control' && v.ok).length
 const controlOk = results[0].ok
-const planLetters = selected.filter((s) => s.plan).map((s) => s.plan)
+// A one-letter tag is a PLAN P1.9 item (a–f); a longer tag names its own PLAN task (e.g. P2.7).
+const planLetters = selected
+  .filter((s) => s.plan)
+  .map((s) => (String(s.plan).length === 1 ? `P1.9 ${s.plan}` : String(s.plan)))
 console.log('')
 if (controlOk && red === selected.length) {
   console.log(
     `PROVE-RED PASSED — ${red}/${selected.length} sabotages went RED on the expected FAIL line` +
-      (planLetters.length ? ` (PLAN P1.9 ${planLetters.join(', ')} included)` : '') +
+      (planLetters.length ? ` (PLAN ${planLetters.join(', ')} included)` : '') +
       `; control GREEN. Wall ${wall}s.`,
   )
   process.exit(0)

@@ -18,16 +18,28 @@
 // themis table has an entry in ./db-gate/leak-matrix.mjs, derived from the CATALOGUE, so a new
 // table without an entry turns the gate RED), the orphan scan over the seeded fixture, and the
 // functional A/B leak matrix with its positive path (owner writes, viewer reads but cannot write).
+// P2.7 adds the client RPCs (P2.5 bootstrap_me/import_local_decision, P2.6 invites and membership):
+// per RPC the catalogue (definer, search_path, EXECUTE authenticated only) and the anon/service_role
+// refusal, then their behaviour, each check in its own rolled-back session over the same fixture.
 
 import { PGlite } from '@electric-sql/pglite'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { installShim, HEPHAESTUS_MIGRATION_ROWS } from './db-gate/shim.mjs'
 import { runGuard } from './check-migrations.mjs'
 import {
   ACTORS,
   ANON,
+  CLIENT_RPCS,
+  INVITEE_EMAIL,
+  RPC_USERS,
+  U,
+  UNVERIFIED_EMAIL,
+  WA,
+  WB,
+  addRpcUsers,
   CROSS_INSERTED,
   LEAK_MATRIX,
   PARENTS,
@@ -767,6 +779,1025 @@ async function runGate(db) {
       )
     }
   }
+
+  // =================================================================================================
+  // P2.7 — THE CLIENT RPCs: P2.5 bootstrap_me/import_local_decision, P2.6 invites and membership
+  // =================================================================================================
+  // Every check runs in its own rolled-back actAs, so each starts from the committed fixture. The
+  // extra users (invitee, unverified, owner2) are added per check by addRpcUsers. `s.sudo` restores
+  // the actAs identity, so a check that switched caller with `callAs` re-sets it after every sudo.
+  /** @typedef {import('./db-gate/leak-matrix.mjs').Session} Session */
+  /** @typedef {import('./db-gate/leak-matrix.mjs').Outcome} Outcome */
+  console.log('\n--- client RPCs: catalogue ---')
+  /** Switch the signed-in caller inside the current actAs (whose identity must be a uuid). */
+  const callAs = (/** @type {Session} */ s, /** @type {string} */ uid) =>
+    s.rows(`select set_config('request.jwt.claim.sub', $1, true)`, [uid])
+  /** The first column of the first row (throws on error: a throw is a FAIL via `guarded`). */
+  const one = async (
+    /** @type {Session} */ s,
+    /** @type {string} */ sql,
+    /** @type {unknown[]} */ params = [],
+  ) => Object.values((await s.rows(sql, params))[0] ?? {})[0]
+  const erred = (/** @type {Outcome} */ o, /** @type {RegExp} */ re) => !o.ok && re.test(o.error)
+  const denied = (/** @type {Outcome} */ o) => erred(o, /permission denied for function/)
+  const show = (/** @type {unknown} */ x) => JSON.stringify(x)
+  /** @returns {Promise<string | null>} */
+  const roleOf = (/** @type {Session} */ s, /** @type {string} */ ws, /** @type {string} */ u) =>
+    s.sudo(
+      async () =>
+        /** @type {string | null} */ (
+          (
+            await s.rows(
+              `select role from themis.memberships where workspace_id = $1 and user_id = $2`,
+              [ws, u],
+            )
+          )[0]?.role ?? null
+        ),
+    )
+  const sha256hex = (/** @type {string} */ t) =>
+    createHash('sha256').update(t, 'utf8').digest('hex')
+  /** One gate line = one rolled-back session as `w`. */
+  const rpc = (
+    /** @type {string} */ name,
+    /** @type {import('./db-gate/leak-matrix.mjs').Who} */ w,
+    /** @type {(s: Session) => Promise<[boolean, string?]>} */ fn,
+  ) => guarded(name, () => actAs(w, fn))
+  const invite = (
+    /** @type {Session} */ s,
+    /** @type {string} */ email,
+    /** @type {string} */ role,
+  ) => one(s, `select themis.create_invite($1, $2, $3)`, [WA, email, role]).then(String)
+  const inviteId = (/** @type {Session} */ s, /** @type {string} */ tok) =>
+    s.sudo(() => one(s, `select id from themis.invites where token_hash = $1`, [sha256hex(tok)]))
+
+  for (const f of CLIENT_RPCS) {
+    await guarded(
+      `${f.sig}: SECURITY DEFINER, search_path='', EXECUTE for authenticated only (not anon, service_role, PUBLIC)`,
+      async () => {
+        const r = (
+          await q(
+            `select p.prosecdef as definer, p.proconfig as config,
+                    has_function_privilege('authenticated', p.oid, 'EXECUTE') as authn,
+                    has_function_privilege('anon', p.oid, 'EXECUTE') as anon,
+                    has_function_privilege('service_role', p.oid, 'EXECUTE') as svc,
+                    exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                             where a.grantee = 0 and a.privilege_type = 'EXECUTE') as pub
+               from pg_proc p where p.oid = to_regprocedure($1)`,
+            [f.sig],
+          )
+        ).rows[0]
+        if (!r) return [false, 'function missing']
+        const pinned = show(r.config) === show(['search_path=""'])
+        return [r.definer === true && pinned && r.authn && !r.anon && !r.svc && !r.pub, show(r)]
+      },
+    )
+    await rpc(`anon cannot EXECUTE ${f.name}`, ANON, async (s) => {
+      const o = await s.attempt(f.call)
+      return [denied(o), show(o)]
+    })
+    await rpc(`service_role cannot EXECUTE ${f.name}`, SERVICE, async (s) => {
+      const o = await s.attempt(f.call)
+      return [denied(o), show(o)]
+    })
+  }
+
+  // --- P2.5 bootstrap_me ---------------------------------------------------------------------------
+  console.log('\n--- client RPCs: bootstrap_me ---')
+  await rpc(
+    'bootstrap_me: a fresh user gets a personal workspace they created and own, visible to them',
+    U.loner,
+    async (s) => {
+      const ws = await one(s, `select themis.bootstrap_me()`)
+      const row = await s.sudo(() =>
+        s.rows(
+          `select w.name, w.created_by, m.role from themis.workspaces w
+             join themis.memberships m on m.workspace_id = w.id where w.id = $1`,
+          [ws],
+        ),
+      )
+      const seen = await s.rows(`select id from themis.workspaces`)
+      const ok =
+        row.length === 1 &&
+        row[0].created_by === U.loner &&
+        row[0].role === 'owner' &&
+        seen.length === 1 &&
+        seen[0].id === ws
+      return [ok, show({ row, seen })]
+    },
+  )
+  await rpc(
+    'bootstrap_me: called twice → the same workspace, one profile, one new workspace (idempotent)',
+    U.loner,
+    async (s) => {
+      const count = () =>
+        s.sudo(() =>
+          one(
+            s,
+            `select (select count(*) from themis.workspaces)::int * 1000
+                  + (select count(*) from themis.profiles where user_id = $1)::int`,
+            [U.loner],
+          ),
+        )
+      const before = Number(await count())
+      const a = await one(s, `select themis.bootstrap_me()`)
+      const b = await one(s, `select themis.bootstrap_me()`)
+      const after = Number(await count())
+      // +1 workspace (×1000) and +1 profile, once.
+      return [a === b && after - before === 1001, show({ a, b, before, after })]
+    },
+  )
+  await rpc(
+    "bootstrap_me: an invited-only user (A's viewer) gets their own workspace, stable, and stays viewer in A",
+    U.viewerA,
+    async (s) => {
+      const a = await one(s, `select themis.bootstrap_me()`)
+      const b = await one(s, `select themis.bootstrap_me()`)
+      const inA = await roleOf(s, WA, U.viewerA)
+      return [a !== WA && a === b && inA === 'viewer', show({ a, b, inA })]
+    },
+  )
+  await rpc(
+    "bootstrap_me: an existing owner (A's) gets A back, no new workspace, profile kept",
+    U.ownerA,
+    async (s) => {
+      const n0 = await s.sudo(() => s.count('workspaces'))
+      const ws = await one(s, `select themis.bootstrap_me()`)
+      const n1 = await s.sudo(() => s.count('workspaces'))
+      const name = await s.sudo(() =>
+        one(s, `select display_name from themis.profiles where user_id = $1`, [U.ownerA]),
+      )
+      return [ws === WA && n1 === n0 && name === 'Owner A', show({ ws, n0, n1, name })]
+    },
+  )
+  await rpc('bootstrap_me: no JWT subject → not_authenticated', '', async (s) => {
+    const o = await s.attempt(`select themis.bootstrap_me()`)
+    return [erred(o, /not_authenticated/), show(o)]
+  })
+
+  // --- P2.5 import_local_decision ------------------------------------------------------------------
+  console.log('\n--- client RPCs: import_local_decision ---')
+  const KEY = '7a1c0e52-3f7e-4b3a-9d55-0c3f2b9b1e01'
+  const PAYLOAD = Object.freeze({
+    client_import_id: KEY,
+    question: 'Build or buy?',
+    methodology: 'agile',
+    scale: 'mid',
+    criteria: [
+      { id: 'c1', name: 'Cost', weight: 5 },
+      { id: 'c2', name: 'Speed', weight: 0 },
+    ],
+    options: [
+      { id: 'o1', name: 'Build' },
+      { id: 'o2', name: 'Buy' },
+    ],
+    scores: { o1: { c1: 1, c2: 5 }, o2: { c1: 4 } },
+  })
+  const imp = (/** @type {Session} */ s, /** @type {unknown} */ ws, /** @type {unknown} */ p) =>
+    s.attempt(`select themis.import_local_decision($1, $2::jsonb)`, [ws, JSON.stringify(p)])
+  const impId = (/** @type {Session} */ s, /** @type {unknown} */ ws, /** @type {unknown} */ p) =>
+    one(s, `select themis.import_local_decision($1, $2::jsonb)`, [ws, JSON.stringify(p)])
+  /** Rows of every table an import writes, in workspace `ws` (read as the superuser). */
+  const importRows = (/** @type {Session} */ s, /** @type {string} */ ws) =>
+    s.sudo(() =>
+      one(
+        s,
+        `select concat_ws(',', (select count(*) from themis.decisions where workspace_id = $1),
+                               (select count(*) from themis.options where workspace_id = $1),
+                               (select count(*) from themis.criteria where workspace_id = $1),
+                               (select count(*) from themis.scores where workspace_id = $1),
+                               (select count(*) from themis.audit_log where workspace_id = $1))`,
+        [ws],
+      ),
+    )
+
+  await rpc(
+    'import_local_decision: an editor imports into A — decision, criteria, options and scores as sent, one audit row',
+    U.editorA,
+    async (s) => {
+      const id = await impId(s, WA, PAYLOAD)
+      const got = await s.sudo(async () => ({
+        d: await s.rows(
+          `select question, methodology, scale, status, frozen, revision, created_by
+             from themis.decisions where id = $1`,
+          [id],
+        ),
+        c: (
+          await s.rows(
+            `select name, weight, position from themis.criteria where decision_id = $1 order by position`,
+            [id],
+          )
+        ).map((r) => [r.name, r.weight, r.position]),
+        o: (
+          await s.rows(
+            `select name, position from themis.options where decision_id = $1 order by position`,
+            [id],
+          )
+        ).map((r) => [r.name, r.position]),
+        sc: (
+          await s.rows(
+            `select o.name as o, c.name as c, x.value from themis.scores x
+               join themis.options o on o.id = x.option_id
+               join themis.criteria c on c.id = x.criterion_id
+              where x.decision_id = $1 order by 1, 2`,
+            [id],
+          )
+        ).map((r) => [r.o, r.c, r.value]),
+        a: await s.rows(
+          `select actor, action, after ->> 'client_import_id' as k from themis.audit_log where entity_id = $1`,
+          [id],
+        ),
+      }))
+      const d = got.d[0]
+      const ok =
+        d?.question === 'Build or buy?' &&
+        d.methodology === 'agile' &&
+        d.scale === 'mid' &&
+        d.status === 'draft' &&
+        d.frozen === false &&
+        d.revision === 1 &&
+        d.created_by === U.editorA &&
+        show(got.c) ===
+          show([
+            ['Cost', 5, 0],
+            ['Speed', 0, 1],
+          ]) &&
+        show(got.o) ===
+          show([
+            ['Build', 0],
+            ['Buy', 1],
+          ]) &&
+        show(got.sc) ===
+          show([
+            ['Build', 'Cost', 1],
+            ['Build', 'Speed', 5],
+            ['Buy', 'Cost', 4],
+          ]) &&
+        got.a.length === 1 &&
+        got.a[0].actor === U.editorA &&
+        got.a[0].action === 'import_local' &&
+        got.a[0].k === KEY
+      return [ok, show(got)]
+    },
+  )
+  await rpc(
+    'import_local_decision: the same client_import_id twice → one decision (the same id), one audit row',
+    U.editorA,
+    async (s) => {
+      const before = await importRows(s, WA)
+      const a = await impId(s, WA, PAYLOAD)
+      const mid = await importRows(s, WA)
+      const b = await impId(s, WA, PAYLOAD)
+      const after = await importRows(s, WA)
+      return [a === b && mid === after && before !== mid, show({ a, b, before, mid, after })]
+    },
+  )
+  await rpc(
+    'import_local_decision: the same key by another editor+ of A with a different payload → the first id, nothing written',
+    U.editorA,
+    async (s) => {
+      const a = await impId(s, WA, PAYLOAD)
+      const mid = await importRows(s, WA)
+      await callAs(s, U.ownerA)
+      const b = await impId(s, WA, { ...PAYLOAD, question: 'changed', options: [] })
+      const after = await importRows(s, WA)
+      return [a === b && mid === after, show({ a, b, mid, after })]
+    },
+  )
+  await rpc(
+    'import_local_decision: UA into B → not_authorized, B unchanged (no decision, no audit row)',
+    U.ownerA,
+    async (s) => {
+      const before = await importRows(s, WB)
+      const o = await imp(s, WB, PAYLOAD)
+      const after = await importRows(s, WB)
+      return [erred(o, /not_authorized/) && before === after, show({ o, before, after })]
+    },
+  )
+  await rpc(
+    "import_local_decision: UB into A with A's used key → not_authorized, A's decision id not revealed",
+    U.editorA,
+    async (s) => {
+      const id = String(await impId(s, WA, PAYLOAD))
+      const before = await importRows(s, WA)
+      await callAs(s, U.ownerB)
+      const o = await imp(s, WA, PAYLOAD)
+      const after = await importRows(s, WA)
+      const leaked = !o.ok && o.error.includes(id)
+      return [erred(o, /not_authorized/) && !leaked && before === after, show({ o, before, after })]
+    },
+  )
+  await rpc(
+    "import_local_decision: A's viewer, a non-member and a null/unknown workspace are refused, nothing written",
+    U.viewerA,
+    async (s) => {
+      const before = await importRows(s, WA)
+      const outcomes = [await imp(s, WA, PAYLOAD)]
+      await callAs(s, U.loner)
+      outcomes.push(await imp(s, WA, PAYLOAD))
+      await callAs(s, U.adminA)
+      outcomes.push(await imp(s, null, PAYLOAD))
+      outcomes.push(await imp(s, '99999999-0000-4000-8000-000000000000', PAYLOAD))
+      const after = await importRows(s, WA)
+      return [
+        outcomes.every((o) => erred(o, /not_authorized/)) && before === after,
+        show({ outcomes, before, after }),
+      ]
+    },
+  )
+  await rpc(
+    'import_local_decision: the same key in B by B → a separate decision in B (the key is per workspace)',
+    U.editorA,
+    async (s) => {
+      const a = await impId(s, WA, PAYLOAD)
+      await callAs(s, U.ownerB)
+      const b = await impId(s, WB, PAYLOAD)
+      const inB = await s.sudo(() =>
+        one(s, `select workspace_id from themis.decisions where id = $1`, [b]),
+      )
+      return [a !== b && inB === WB, show({ a, b, inB })]
+    },
+  )
+
+  // Every bad payload is refused, and together they leave ZERO residue (the import is atomic).
+  let badKey = 10
+  const bad = (/** @type {string} */ label, /** @type {Record<string, unknown>} */ patch) =>
+    /** @type {[string, unknown]} */ ([
+      label,
+      { ...PAYLOAD, client_import_id: `7a1c0e52-3f7e-4b3a-9d55-0c3f2b9b1e${badKey++}`, ...patch },
+    ])
+  /** @type {[string, unknown][]} */
+  const BAD_PAYLOADS = [
+    ['not an object', [1, 2]],
+    ['no client_import_id', { ...PAYLOAD, client_import_id: undefined }],
+    ['client_import_id not a uuid', { ...PAYLOAD, client_import_id: 'abc' }],
+    ['client_import_id a number', { ...PAYLOAD, client_import_id: 5 }],
+    bad('weight 6', { criteria: [{ id: 'c1', name: 'x', weight: 6 }] }),
+    bad('weight -1', { criteria: [{ id: 'c1', name: 'x', weight: -1 }] }),
+    bad('weight 2.5', { criteria: [{ id: 'c1', name: 'x', weight: 2.5 }] }),
+    bad('weight "3"', { criteria: [{ id: 'c1', name: 'x', weight: '3' }] }),
+    bad('weight missing', { criteria: [{ id: 'c1', name: 'x' }] }),
+    bad('score 0', { scores: { o1: { c1: 0 } } }),
+    bad('score 6', { scores: { o1: { c1: 6 } } }),
+    bad('score 4.5', { scores: { o1: { c1: 4.5 } } }),
+    bad('score null', { scores: { o1: { c1: null } } }),
+    bad('score of an unknown option', { scores: { zz: { c1: 3 } } }),
+    bad('score of an unknown criterion', { scores: { o1: { zz: 3 } } }),
+    bad('scores an array', { scores: [1] }),
+    bad('duplicate option id', {
+      options: [
+        { id: 'o1', name: 'a' },
+        { id: 'o1', name: 'b' },
+      ],
+    }),
+    bad('duplicate criterion id', {
+      criteria: [
+        { id: 'c1', name: 'a', weight: 1 },
+        { id: 'c1', name: 'b', weight: 1 },
+      ],
+    }),
+    bad('empty option id', { options: [{ id: '', name: 'a' }], scores: {} }),
+    bad('option id over 64 chars', { options: [{ id: 'x'.repeat(65), name: 'a' }], scores: {} }),
+    bad('option without a name', { options: [{ id: 'o1' }] }),
+    bad('options not an array', { options: { id: 'o1' } }),
+    bad('unknown methodology', { methodology: 'kanban' }),
+    bad('scale missing', { scale: undefined }),
+    bad('question a number', { question: 5 }),
+    bad('question over 1000 chars', { question: 'q'.repeat(1001) }),
+    bad('option name over 200 chars', {
+      options: [{ id: 'o1', name: 'n'.repeat(201) }],
+      scores: {},
+    }),
+    bad('101 options', {
+      options: Array.from({ length: 101 }, (_, i) => ({ id: `o${i}`, name: 'x' })),
+      scores: {},
+    }),
+  ]
+  await guarded(`import_local_decision: ${BAD_PAYLOADS.length} bad payloads are each refused`, () =>
+    actAs(U.editorA, async (s) => {
+      const accepted = []
+      for (const [label, p] of BAD_PAYLOADS) {
+        const o = await imp(s, WA, p)
+        check(`import_local_decision refuses: ${label}`, !o.ok, o.ok ? 'ACCEPTED' : '')
+        if (o.ok) accepted.push(label)
+      }
+      return [accepted.length === 0, accepted.join(', ')]
+    }),
+  )
+  await rpc(
+    'import_local_decision: the refused payloads left 0 residue (decisions, options, criteria, scores, audit_log)',
+    U.editorA,
+    async (s) => {
+      const before = await importRows(s, WA)
+      for (const [, p] of BAD_PAYLOADS) await imp(s, WA, p)
+      const after = await importRows(s, WA)
+      return [before === after, `before ${before}, after ${after}`]
+    },
+  )
+  await rpc(
+    'import_local_decision: a minimal payload and scores: null are accepted; an upper-case key dedupes with its lower-case form',
+    U.editorA,
+    async (s) => {
+      const k2 = '8a1c0e52-3f7e-4b3a-9d55-0c3f2b9b1e02'
+      const min = await imp(s, WA, {
+        client_import_id: '8a1c0e52-3f7e-4b3a-9d55-0c3f2b9b1e01',
+        methodology: 'yolo',
+        scale: 'small',
+      })
+      const a = await impId(s, WA, { ...PAYLOAD, client_import_id: k2, scores: null })
+      const b = await impId(s, WA, { ...PAYLOAD, client_import_id: k2.toUpperCase() })
+      return [min.ok && a === b, show({ min, a, b })]
+    },
+  )
+  await rpc(
+    'import_local_decision: once the imported decision is deleted, the same key imports again',
+    U.editorA,
+    async (s) => {
+      const a = await impId(s, WA, PAYLOAD)
+      const del = await s.attempt(`delete from themis.decisions where id = $1`, [a])
+      const b = await impId(s, WA, PAYLOAD)
+      return [del.ok && del.affected === 1 && a !== b, show({ a, b, del })]
+    },
+  )
+
+  // --- P2.6 create_invite --------------------------------------------------------------------------
+  console.log('\n--- client RPCs: create_invite ---')
+  await rpc('create_invite: an owner gets a raw 64 lower-hex token', U.ownerA, async (s) => {
+    const tok = await invite(s, INVITEE_EMAIL, 'editor')
+    return [/^[0-9a-f]{64}$/.test(tok), tok]
+  })
+  await rpc(
+    'create_invite: the row stores only sha256(token) hex; the raw token is stored nowhere in invites',
+    U.ownerA,
+    async (s) => {
+      const tok = await invite(s, INVITEE_EMAIL, 'editor')
+      const rows = await s.sudo(() =>
+        s.rows(`select token_hash from themis.invites where email = $1`, [INVITEE_EMAIL]),
+      )
+      const anywhere = await s.sudo(() =>
+        one(
+          s,
+          `select count(*)::int from themis.invites i where strpos(to_jsonb(i)::text, $1) > 0`,
+          [tok],
+        ),
+      )
+      const ok = rows.length === 1 && rows[0].token_hash === sha256hex(tok) && anywhere === 0
+      return [ok, show({ rows, anywhere })]
+    },
+  )
+  await rpc(
+    'create_invite: email lower-cased and trimmed, role as asked, created_by = caller, expires in 7 days; two invites, two tokens',
+    U.ownerA,
+    async (s) => {
+      const tok = await invite(s, '  Invitee@EXAMPLE.com ', 'editor')
+      const tok2 = await invite(s, INVITEE_EMAIL, 'editor')
+      const r = (
+        await s.sudo(() =>
+          s.rows(
+            `select email, role, created_by,
+                    extract(epoch from (expires_at - now())) / 86400 as days
+               from themis.invites where token_hash = $1`,
+            [sha256hex(tok)],
+          ),
+        )
+      )[0]
+      const ok =
+        r?.email === INVITEE_EMAIL &&
+        r.role === 'editor' &&
+        r.created_by === U.ownerA &&
+        Math.abs(Number(r.days) - 7) < 0.001 &&
+        tok !== tok2
+      return [ok, show(r)]
+    },
+  )
+  await rpc('create_invite: an admin may invite an editor and an admin', U.adminA, async (s) => {
+    const e = await s.attempt(`select themis.create_invite($1, 'e@example.com', 'editor')`, [WA])
+    const a = await s.attempt(`select themis.create_invite($1, 'e@example.com', 'admin')`, [WA])
+    return [e.ok && a.ok, show({ e, a })]
+  })
+  await rpc(
+    'create_invite: an admin cannot invite an owner (not_authorized, nothing stored)',
+    U.adminA,
+    async (s) => {
+      const before = await s.sudo(() => s.count('invites'))
+      const o = await s.attempt(`select themis.create_invite($1, 'o@example.com', 'owner')`, [WA])
+      const after = await s.sudo(() => s.count('invites'))
+      return [erred(o, /not_authorized/) && before === after, show(o)]
+    },
+  )
+  await rpc(
+    "create_invite: an editor, a viewer, B's owner and a non-member are refused (not_authorized, nothing stored)",
+    U.editorA,
+    async (s) => {
+      const before = await s.sudo(() => s.count('invites'))
+      const outcomes = []
+      for (const u of [U.editorA, U.viewerA, U.ownerB, U.loner]) {
+        await callAs(s, u)
+        outcomes.push(
+          await s.attempt(`select themis.create_invite($1, 'e@example.com', 'viewer')`, [WA]),
+        )
+      }
+      const after = await s.sudo(() => s.count('invites'))
+      return [outcomes.every((o) => erred(o, /not_authorized/)) && before === after, show(outcomes)]
+    },
+  )
+  await rpc(
+    "create_invite: A's owner into B, or a null workspace → not_authorized",
+    U.ownerA,
+    async (s) => {
+      const b = await s.attempt(`select themis.create_invite($1, 'o@example.com', 'viewer')`, [WB])
+      const n = await s.attempt(`select themis.create_invite(null, 'o@example.com', 'viewer')`)
+      return [erred(b, /not_authorized/) && erred(n, /not_authorized/), show({ b, n })]
+    },
+  )
+  await rpc(
+    'create_invite: a bad or null role or email → invalid_argument',
+    U.ownerA,
+    async (s) => {
+      const outcomes = [
+        await s.attempt(`select themis.create_invite($1, 'o@example.com', 'boss')`, [WA]),
+        await s.attempt(`select themis.create_invite($1, 'o@example.com', null)`, [WA]),
+        await s.attempt(`select themis.create_invite($1, null, 'viewer')`, [WA]),
+      ]
+      for (const e of ['nope', '', 'a b@c.d', 'a@b@c'])
+        outcomes.push(await s.attempt(`select themis.create_invite($1, $2, 'viewer')`, [WA, e]))
+      return [outcomes.every((o) => erred(o, /invalid_argument/)), show(outcomes)]
+    },
+  )
+  await rpc('create_invite: a direct INSERT into invites is still refused', U.ownerA, async (s) => {
+    const o = await s.attempt(
+      `insert into themis.invites (workspace_id, email, role, token_hash, expires_at)
+       values ($1, 'z@example.com', 'viewer', repeat('c', 64), now() + interval '1 day')`,
+      [WA],
+    )
+    return [refused(o), show(o)]
+  })
+
+  // --- P2.6 accept_invite --------------------------------------------------------------------------
+  console.log('\n--- client RPCs: accept_invite ---')
+  await rpc(
+    'accept_invite: the invitee (mixed-case, confirmed email) joins with the invite role; accepted_at set',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'editor')
+      await callAs(s, RPC_USERS.invitee)
+      const unseen = await s.count('invites')
+      const ws = await one(s, `select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      const at = await s.sudo(() =>
+        one(s, `select accepted_at is not null from themis.invites where token_hash = $1`, [
+          sha256hex(tok),
+        ]),
+      )
+      return [
+        unseen === 0 && ws === WA && role === 'editor' && at === true,
+        show({ unseen, ws, role, at }),
+      ]
+    },
+  )
+  await rpc(
+    'accept_invite: a user with the WRONG email → invite_email_mismatch, no membership, invite still pending',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'editor')
+      await callAs(s, U.loner)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, U.loner)
+      const pending = await s.sudo(() =>
+        one(s, `select accepted_at is null from themis.invites where token_hash = $1`, [
+          sha256hex(tok),
+        ]),
+      )
+      return [
+        erred(o, /invite_email_mismatch/) && role === null && pending === true,
+        show({ o, role }),
+      ]
+    },
+  )
+  await rpc(
+    'accept_invite: an UNCONFIRMED email (email_confirmed_at null) → email_not_verified, no membership',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const nul = await s.sudo(() =>
+        one(s, `select email_confirmed_at is null from auth.users where id = $1`, [
+          RPC_USERS.unverified,
+        ]),
+      )
+      const tok = await invite(s, UNVERIFIED_EMAIL, 'viewer')
+      await callAs(s, RPC_USERS.unverified)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.unverified)
+      return [
+        nul === true && erred(o, /email_not_verified/) && role === null,
+        show({ nul, o, role }),
+      ]
+    },
+  )
+  await rpc(
+    'accept_invite: an EXPIRED invite → invite_expired, no membership',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'viewer')
+      await s.sudo(() =>
+        s.rows(
+          `update themis.invites set expires_at = now() - interval '1 second' where token_hash = $1`,
+          [sha256hex(tok)],
+        ),
+      )
+      await callAs(s, RPC_USERS.invitee)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      return [erred(o, /invite_expired/) && role === null, show({ o, role })]
+    },
+  )
+  await rpc('accept_invite: a REUSED invite → invite_used', U.ownerA, async (s) => {
+    await addRpcUsers(s)
+    const tok = await invite(s, INVITEE_EMAIL, 'viewer')
+    await callAs(s, RPC_USERS.invitee)
+    const first = await s.attempt(`select themis.accept_invite($1)`, [tok])
+    const again = await s.attempt(`select themis.accept_invite($1)`, [tok])
+    return [first.ok && erred(again, /invite_used/), show({ first, again })]
+  })
+  await rpc(
+    'accept_invite: a used invite cannot re-admit a member removed since → invite_used, no membership',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'viewer')
+      await callAs(s, RPC_USERS.invitee)
+      await one(s, `select themis.accept_invite($1)`, [tok])
+      await callAs(s, U.ownerA)
+      await one(s, `select themis.remove_member($1, $2)`, [WA, RPC_USERS.invitee])
+      await callAs(s, RPC_USERS.invitee)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      return [erred(o, /invite_used/) && role === null, show({ o, role })]
+    },
+  )
+  await rpc(
+    'accept_invite: an unknown, malformed or null token, and a stored HASH used as the token → invite_invalid',
+    RPC_USERS.invitee,
+    async (s) => {
+      await addRpcUsers(s)
+      const outcomes = [
+        await s.attempt(`select themis.accept_invite(repeat('e', 64))`),
+        await s.attempt(`select themis.accept_invite(repeat('a', 64))`), // the fixture row's token_hash
+        await s.attempt(`select themis.accept_invite(null)`),
+      ]
+      for (const t of ['', 'ABC', 'x'.repeat(64)])
+        outcomes.push(await s.attempt(`select themis.accept_invite($1)`, [t]))
+      return [outcomes.every((o) => erred(o, /invite_invalid/)), show(outcomes)]
+    },
+  )
+  await rpc(
+    'accept_invite: an existing member → already_member, role unchanged',
+    U.ownerA,
+    async (s) => {
+      const tok = await invite(s, 'u2@example.com', 'owner') // u2 = A's editor
+      await callAs(s, U.editorA)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, U.editorA)
+      return [erred(o, /already_member/) && role === 'editor', show({ o, role })]
+    },
+  )
+  await rpc(
+    'accept_invite: the inviter demoted since → invite_invalid, no membership',
+    U.adminA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'admin')
+      await s.sudo(() =>
+        s.rows(
+          `update themis.memberships set role = 'viewer' where workspace_id = $1 and user_id = $2`,
+          [WA, U.adminA],
+        ),
+      )
+      await callAs(s, RPC_USERS.invitee)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      return [erred(o, /invite_invalid: the inviter/) && role === null, show({ o, role })]
+    },
+  )
+  await rpc(
+    'accept_invite: an owner invite whose inviter is now only admin → invite_invalid',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'owner')
+      await s.sudo(() =>
+        s.rows(
+          `insert into themis.memberships (workspace_id, user_id, role) values ($1, $2, 'owner')`,
+          [WA, RPC_USERS.owner2],
+        ),
+      )
+      await s.sudo(() =>
+        s.rows(
+          `update themis.memberships set role = 'admin' where workspace_id = $1 and user_id = $2`,
+          [WA, U.ownerA],
+        ),
+      )
+      await callAs(s, RPC_USERS.invitee)
+      const o = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      return [erred(o, /invite_invalid/) && role === null, show({ o, role })]
+    },
+  )
+  await rpc(
+    "accept_invite: an owner's owner invite → the invitee becomes owner",
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'owner')
+      await callAs(s, RPC_USERS.invitee)
+      const ws = await one(s, `select themis.accept_invite($1)`, [tok])
+      const role = await roleOf(s, WA, RPC_USERS.invitee)
+      return [ws === WA && role === 'owner', show({ ws, role })]
+    },
+  )
+
+  // --- P2.6 revoke_invite --------------------------------------------------------------------------
+  console.log('\n--- client RPCs: revoke_invite ---')
+  await rpc(
+    "revoke_invite: an editor, and B's owner (cross-tenant), → invite_not_found; the invite is kept",
+    U.ownerA,
+    async (s) => {
+      const id = await inviteId(s, await invite(s, 'r1@example.com', 'viewer'))
+      const outcomes = []
+      for (const u of [U.editorA, U.ownerB]) {
+        await callAs(s, u)
+        outcomes.push(await s.attempt(`select themis.revoke_invite($1)`, [id]))
+      }
+      const unknown = await s.attempt(`select themis.revoke_invite(gen_random_uuid())`)
+      const kept = await s.sudo(() => s.count('invites', `id = '${id}'`))
+      return [
+        outcomes.every((o) => erred(o, /invite_not_found/)) &&
+          erred(unknown, /invite_not_found/) &&
+          kept === 1,
+        show({ outcomes, unknown, kept }),
+      ]
+    },
+  )
+  await rpc(
+    'revoke_invite: an admin cannot revoke an owner invite; the owner can',
+    U.ownerA,
+    async (s) => {
+      const id = await inviteId(s, await invite(s, 'r2@example.com', 'owner'))
+      await callAs(s, U.adminA)
+      const a = await s.attempt(`select themis.revoke_invite($1)`, [id])
+      await callAs(s, U.ownerA)
+      const o = await s.attempt(`select themis.revoke_invite($1)`, [id])
+      const left = await s.sudo(() => s.count('invites', `id = '${id}'`))
+      return [erred(a, /not_authorized/) && o.ok && left === 0, show({ a, o, left })]
+    },
+  )
+  await rpc(
+    'revoke_invite: an admin revokes a pending invite (the row is gone, it cannot be accepted)',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'viewer')
+      const id = await inviteId(s, tok)
+      await callAs(s, U.adminA)
+      const o = await s.attempt(`select themis.revoke_invite($1)`, [id])
+      const left = await s.sudo(() => s.count('invites', `id = '${id}'`))
+      await callAs(s, RPC_USERS.invitee)
+      const acc = await s.attempt(`select themis.accept_invite($1)`, [tok])
+      return [o.ok && left === 0 && erred(acc, /invite_invalid/), show({ o, left, acc })]
+    },
+  )
+  await rpc(
+    'revoke_invite: an accepted invite → invite_used (kept as history)',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const tok = await invite(s, INVITEE_EMAIL, 'viewer')
+      const id = await inviteId(s, tok)
+      await callAs(s, RPC_USERS.invitee)
+      await one(s, `select themis.accept_invite($1)`, [tok])
+      await callAs(s, U.ownerA)
+      const o = await s.attempt(`select themis.revoke_invite($1)`, [id])
+      return [erred(o, /invite_used/), show(o)]
+    },
+  )
+
+  // --- P2.6 set_member_role ------------------------------------------------------------------------
+  console.log('\n--- client RPCs: set_member_role ---')
+  await rpc(
+    'set_member_role: an admin self-promoting to owner → not_authorized, still admin',
+    U.adminA,
+    async (s) => {
+      const o = await s.attempt(`select themis.set_member_role($1, $2, 'owner')`, [WA, U.adminA])
+      const role = await roleOf(s, WA, U.adminA)
+      return [erred(o, /not_authorized/) && role === 'admin', show({ o, role })]
+    },
+  )
+  await rpc(
+    'set_member_role: an admin promoting an editor to owner, or demoting the owner → not_authorized',
+    U.adminA,
+    async (s) => {
+      const p = await s.attempt(`select themis.set_member_role($1, $2, 'owner')`, [WA, U.editorA])
+      const d = await s.attempt(`select themis.set_member_role($1, $2, 'admin')`, [WA, U.ownerA])
+      const roles = [await roleOf(s, WA, U.editorA), await roleOf(s, WA, U.ownerA)]
+      return [
+        erred(p, /not_authorized/) &&
+          erred(d, /not_authorized/) &&
+          show(roles) === show(['editor', 'owner']),
+        show({ p, d, roles }),
+      ]
+    },
+  )
+  await rpc(
+    'set_member_role: an admin changes viewer → editor and demotes itself (takes effect), then has no authority left',
+    U.adminA,
+    async (s) => {
+      const a = await s.attempt(`select themis.set_member_role($1, $2, 'editor')`, [WA, U.viewerA])
+      const v = await roleOf(s, WA, U.viewerA)
+      const self = await s.attempt(`select themis.set_member_role($1, $2, 'viewer')`, [
+        WA,
+        U.adminA,
+      ])
+      const after = await s.attempt(`select themis.set_member_role($1, $2, 'viewer')`, [
+        WA,
+        U.editorA,
+      ])
+      return [
+        a.ok && v === 'editor' && self.ok && erred(after, /not_authorized/),
+        show({ a, v, self, after }),
+      ]
+    },
+  )
+  await rpc(
+    'set_member_role: the LAST owner demoting self → last_owner, still owner',
+    U.ownerA,
+    async (s) => {
+      const o = await s.attempt(`select themis.set_member_role($1, $2, 'admin')`, [WA, U.ownerA])
+      const role = await roleOf(s, WA, U.ownerA)
+      return [erred(o, /last_owner/) && role === 'owner', show({ o, role })]
+    },
+  )
+  await rpc(
+    'set_member_role: with two owners one may step down; the remaining owner cannot (last_owner)',
+    U.ownerA,
+    async (s) => {
+      const promote = await s.attempt(`select themis.set_member_role($1, $2, 'owner')`, [
+        WA,
+        U.adminA,
+      ])
+      const down = await s.attempt(`select themis.set_member_role($1, $2, 'viewer')`, [
+        WA,
+        U.ownerA,
+      ])
+      await callAs(s, U.adminA)
+      const last = await s.attempt(`select themis.set_member_role($1, $2, 'editor')`, [
+        WA,
+        U.adminA,
+      ])
+      const role = await roleOf(s, WA, U.adminA)
+      return [
+        promote.ok && down.ok && erred(last, /last_owner/) && role === 'owner',
+        show({ promote, down, last, role }),
+      ]
+    },
+  )
+  await rpc(
+    'set_member_role: a bad role → invalid_argument; a non-member target → member_not_found; the same role is a no-op',
+    U.ownerA,
+    async (s) => {
+      const b = await s.attempt(`select themis.set_member_role($1, $2, 'boss')`, [WA, U.viewerA])
+      const m = await s.attempt(`select themis.set_member_role($1, $2, 'viewer')`, [WA, U.ownerB])
+      const same = await s.attempt(`select themis.set_member_role($1, $2, 'owner')`, [WA, U.ownerA])
+      return [
+        erred(b, /invalid_argument/) && erred(m, /member_not_found/) && same.ok,
+        show({ b, m, same }),
+      ]
+    },
+  )
+  await rpc(
+    "set_member_role: an editor, a viewer, a non-member and A's owner on B are refused; a direct UPDATE of memberships.role too",
+    U.editorA,
+    async (s) => {
+      const outcomes = []
+      for (const u of [U.editorA, U.viewerA, U.loner]) {
+        await callAs(s, u)
+        outcomes.push(await s.attempt(`select themis.set_member_role($1, $2, 'owner')`, [WA, u]))
+      }
+      await callAs(s, U.ownerA)
+      outcomes.push(
+        await s.attempt(`select themis.set_member_role($1, $2, 'viewer')`, [WB, U.ownerB]),
+      )
+      const direct = await s.attempt(
+        `update themis.memberships set role = 'owner' where user_id = $1`,
+        [U.viewerA],
+      )
+      const roles = [
+        await roleOf(s, WA, U.editorA),
+        await roleOf(s, WA, U.viewerA),
+        await roleOf(s, WB, U.ownerB),
+      ]
+      return [
+        outcomes.every((o) => erred(o, /not_authorized/)) &&
+          refused(direct) &&
+          show(roles) === show(['editor', 'viewer', 'owner']),
+        show({ outcomes, direct, roles }),
+      ]
+    },
+  )
+
+  // --- P2.6 remove_member --------------------------------------------------------------------------
+  console.log('\n--- client RPCs: remove_member ---')
+  await rpc('remove_member: an admin cannot remove the owner', U.adminA, async (s) => {
+    const o = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.ownerA])
+    const role = await roleOf(s, WA, U.ownerA)
+    return [erred(o, /not_authorized/) && role === 'owner', show({ o, role })]
+  })
+  await rpc('remove_member: an admin removes an editor, then itself', U.adminA, async (s) => {
+    const e = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.editorA])
+    const self = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.adminA])
+    const roles = [await roleOf(s, WA, U.editorA), await roleOf(s, WA, U.adminA)]
+    return [e.ok && self.ok && show(roles) === show([null, null]), show({ e, self, roles })]
+  })
+  await rpc(
+    'remove_member: the LAST owner cannot remove self → last_owner, still owner',
+    U.ownerA,
+    async (s) => {
+      const o = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.ownerA])
+      const role = await roleOf(s, WA, U.ownerA)
+      return [erred(o, /last_owner/) && role === 'owner', show({ o, role })]
+    },
+  )
+  await rpc(
+    'remove_member: with two owners, an owner removes the other, and may leave',
+    U.ownerA,
+    async (s) => {
+      await addRpcUsers(s)
+      const add = () =>
+        s.sudo(() =>
+          s.rows(
+            `insert into themis.memberships (workspace_id, user_id, role) values ($1, $2, 'owner')`,
+            [WA, RPC_USERS.owner2],
+          ),
+        )
+      await add()
+      const other = await s.attempt(`select themis.remove_member($1, $2)`, [WA, RPC_USERS.owner2])
+      await add()
+      const leave = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.ownerA])
+      const roles = [await roleOf(s, WA, U.ownerA), await roleOf(s, WA, RPC_USERS.owner2)]
+      return [
+        other.ok && leave.ok && show(roles) === show([null, 'owner']),
+        show({ other, leave, roles }),
+      ]
+    },
+  )
+  await rpc(
+    "remove_member: a non-member → member_not_found; A's owner on B → not_authorized, B's owner stays",
+    U.ownerA,
+    async (s) => {
+      const m = await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.loner])
+      const b = await s.attempt(`select themis.remove_member($1, $2)`, [WB, U.ownerB])
+      const role = await roleOf(s, WB, U.ownerB)
+      return [
+        erred(m, /member_not_found/) && erred(b, /not_authorized/) && role === 'owner',
+        show({ m, b, role }),
+      ]
+    },
+  )
+  await rpc(
+    "remove_member: an editor, a viewer and B's owner cannot remove a member of A",
+    U.editorA,
+    async (s) => {
+      const outcomes = []
+      for (const u of [U.editorA, U.viewerA, U.ownerB]) {
+        await callAs(s, u)
+        outcomes.push(await s.attempt(`select themis.remove_member($1, $2)`, [WA, U.viewerA]))
+      }
+      const role = await roleOf(s, WA, U.viewerA)
+      return [
+        outcomes.every((o) => erred(o, /not_authorized/)) && role === 'viewer',
+        show({ outcomes, role }),
+      ]
+    },
+  )
+
+  // Every RPC check above ran in a rolled-back session: the committed fixture is exactly as seeded.
+  await guarded(
+    'client RPCs: the committed fixture is unchanged (every check rolled back)',
+    async () => {
+      const r = (
+        await q(
+          `select (select count(*) from themis.memberships)::int as m,
+                      (select count(*) from themis.invites)::int as i,
+                      (select count(*) from themis.workspaces)::int as w,
+                      (select count(*) from themis.decisions)::int as d,
+                      (select count(*) from auth.users where id = any ($1::uuid[]))::int as extra`,
+          [Object.values(RPC_USERS)],
+        )
+      ).rows[0]
+      return [show(r) === show({ m: 5, i: 2, w: 2, d: 3, extra: 0 }), show(r)]
+    },
+  )
 
   console.log('')
   if (failures > 0) {
