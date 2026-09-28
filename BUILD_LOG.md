@@ -203,3 +203,59 @@ decision_id)` FKs, so both ends of a cell belong to the same decision. RLS goes 
   is outside P1.5's files, so the assertion lives in the Vitest harness until P1.8 adds the gate line.
 - Next: test-writer for P1.5 (append decisions/options/criteria/scores to `TENANT_TABLES`, plus role gating,
   the composite-FK cross-tenant insert and column grants), then P1.6.
+
+## 2026-09-28 — P1.5 tests: decision core (test-writer)
+
+- Did: extended `scripts/db-tenancy.test.ts`, keeping one PGlite per file. The `actAs` harness is module-local, so no sibling
+  file was created. It went from 82 to 170 tests, and the suite from 140 to 228.
+  - Fixture: workspace A has draft decision DA (2 options, 2 criteria, 2 scored cells, 2 free cells) and frozen+approved DAF
+    (1×1 scored). Workspace B has draft DB (1×1 scored). Every row is at `updated_at = OLD`.
+  - `TENANT_TABLES` now also has decisions/options/criteria/scores. B reads 0 of A, and B's UPDATE/DELETE of A's rows
+    has no effect: the snapshot is unchanged.
+  - Cross-tenant child inserts by B, for options, criteria and scores:
+    - `workspace_id = B` pointing at A's decision is refused by `*_decision_fkey` (the composite FK).
+    - `workspace_id = A` is refused by RLS.
+    - A score on B's own decision that points at A's option is refused by `scores_option_fkey`.
+    - B cannot re-point its rows via `decision_id`/`workspace_id` updates (permission denied).
+  - Mixing decisions: a score whose option or criterion belongs to another decision is refused by
+    `scores_option_fkey`/`scores_criterion_fkey`.
+  - Role gating:
+    - viewer reads everything; every insert is refused, and every update/delete affects 0 rows.
+    - editor/admin/owner create decisions, options, criteria and scores (including the `on conflict` upsert).
+      They edit and delete a draft and its children.
+    - Nobody can UPDATE status, frozen, approved_by/at, lineage_id, revision, created_by, id, workspace_id,
+      created_at or updated_at on a decision. Nobody can INSERT one with any lifecycle column preset. Child ids,
+      tenancy keys and created_by are also locked.
+    - A frozen decision cannot be updated or deleted (0 rows) by editor/admin/owner, but stays visible.
+  - Constraints (as superuser):
+    - weight -1/6 are refused and 0/5 accepted; score 0/6 are refused and 1/5 accepted (an update to 6 is refused too).
+    - one score per cell; revision ≥ 1.
+    - frozen ⇒ approved_at (also on nulling approved_at); approved ⇒ approved_at.
+    - status/methodology/scale enums.
+    - `unique(lineage_id, revision)` is global across workspaces, and the next revision is free.
+    - length limits and position ≥ 0.
+  - Structure and grants:
+    - exact column lists, exact PK/unique keys, and an exact FK list including composite columns and ON DELETE
+      (no child has a direct FK to workspaces).
+    - RLS on, exactly 16 policies, all TO authenticated.
+    - anon has no privilege; grantees are authenticated and service_role only.
+    - authenticated has SELECT/DELETE at table level, and INSERT/UPDATE only on the exact planned column set
+      (no table-wide INSERT/UPDATE).
+  - Defaults, triggers and cascades:
+    - created_by = auth.uid() on all 4 tables. A new decision is a draft with revision 1, not frozen, a fresh lineage,
+      and weight defaults to 3.
+    - updated_at bumps on all 4 tables.
+    - Cascades: decision → children; option/criterion → their scores only; workspace → all 4 tables (frozen
+      included, B intact); an auth user delete nulls created_by/approved_by.
+- Mutation evidence: `DB_GATE_MIGRATIONS` pointed at mutated COPIES of the archive. `git diff supabase/` is empty.
+  - m1: removed `and not frozen` from `decisions_update`. 3 failed: "editor/admin/owner cannot update or delete a frozen decision".
+  - m2: appended `grant update (status) on themis.decisions to authenticated`. 4 failed: the exact column-grant test, plus
+    "editor/admin/owner cannot UPDATE any lifecycle column".
+  - m3: turned `options_decision_fkey` into a single-column FK `(decision_id) → decisions(id)`. 2 failed: the FK-list test,
+    plus "an options row claiming workspace B but pointing at A's decision is refused by the composite FK". That single-column
+    FK is the real cross-tenant hole the composite FK closes.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate` exits 0. 228 tests pass,
+  and the gate applies 3 files twice. No live Supabase; not pushed.
+- Bugs found: none. The migration behaves as DECISIONS.md "P1.5 decision core choices" describes. Noted, by plan: until the
+  P4.2 `decision_frozen` triggers, editors can still write options, criteria and scores of a frozen decision.
+- Next: P1.6 (analysis and collaboration).

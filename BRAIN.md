@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.5) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.5 tests) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -101,9 +101,10 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   P1.4 done: tenancy migration (profiles, workspaces, memberships, invites + RLS helpers), local only,
   covered by `scripts/db-tenancy.test.ts` (82 tests; suite total 138).
   P1.5 done (builder): the decision-core migration (decisions, options, criteria, scores), local
-  only. The enum-match test is in `db-tenancy.test.ts` (suite total 140). Isolation coverage for these
-  tables is still pending from the test-writer.
-  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.5 tests, then P1.6 (analysis).
+  only. P1.5 tests done: `db-tenancy.test.ts` now covers the decision core too (isolation matrix,
+  composite-FK cross-tenant inserts, role gating, lifecycle columns, constraints, grants, cascades;
+  170 tests in that file, suite total 228).
+  `db:gate:prove-red` and `db:apply` arrive in P1.9/P1.11. Next: P1.6 (analysis).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -143,6 +144,10 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **An exact-set catalog assertion over the whole `themis` schema breaks on the NEXT migration.**
   P1.4's FK, policy and grant lists went RED the moment P1.5 added tables. Scope every such
   assertion to the tables of its own task. Found in P1.5.
+- **A unique/PK violation fires before a foreign-key violation.** FK checks run as after-row
+  triggers, so an insert that hits both reports "duplicate key" and never reaches the FK. A test
+  that proves a composite FK refuses a cross-tenant score must target a FREE cell, or it passes
+  for the wrong reason. The P1.5 fixture leaves OA1×CA2 and OA2×CA2 unscored for this. Found in the P1.5 tests.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -163,6 +168,19 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.5 tests) — decision core in `scripts/db-tenancy.test.ts`
+
+- Did: 88 tests added in the same file and PGlite instance (the actAs helpers are module-local). The
+  fixture gained a draft decision and a frozen decision in A and a draft in B, with options, criteria
+  and scores. The four tables joined `TENANT_TABLES`. The file now covers: composite-FK and RLS
+  refusals for cross-tenant child inserts, scores that mix two decisions, viewer read-only access,
+  editor/admin/owner writes and the upsert, lifecycle columns refused on UPDATE and INSERT, frozen
+  decisions that cannot be updated or deleted, CHECK/unique limits, exact column grants, anon
+  refusals, created_by defaults, updated_at bumps and cascades. Three archive-copy mutations each went RED
+  (BUILD_LOG.md). lint, typecheck, 228 tests, db:check and db:gate are green. `supabase/` is untouched.
+- Left off: P1.6. Children of a frozen decision are still writable by editors until the P4.2
+  `decision_frozen` triggers. That is by plan, and the P1.5 tests do not lock it in either direction.
 
 ### 2026-09-28 (P1.5) — decision core migration
 

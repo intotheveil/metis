@@ -1,7 +1,9 @@
 // @vitest-environment node
 //
 // P1.4 — tenancy contract: themis.profiles, workspaces, memberships, invites.
-// P1.5 — the decisions enums match src/lib/decision.ts (the rest of P1.5 is the test-writer's).
+// P1.5 — decision core: decisions, options, criteria, scores (isolation matrix, cross-tenant child
+//        inserts through the composite FKs, role gating, lifecycle columns, constraints, grants)
+//        and the enum match with src/lib/decision.ts.
 // The P1.4 exact-set assertions (FKs, policies, column grants) are scoped to the P1.4 TABLES, so
 // a later migration's tables extend the schema without rewriting P1.4's contract.
 //
@@ -49,11 +51,36 @@ const OLD = '2000-01-01T00:00:00Z' // fixture updated_at, so a trigger bump is u
 const TABLES = ['profiles', 'workspaces', 'memberships', 'invites'] as const
 type Table = (typeof TABLES)[number]
 
+// --- P1.5 decision-core fixture ----------------------------------------------------------------
+// Workspace A: draft decision DA (options OA1, OA2; criteria CA1, CA2; scored cells OA1×CA1 and
+// OA2×CA1, so OA1×CA2 and OA2×CA2 are free) and a frozen, approved decision DAF (OF1 × CF1 scored).
+// Workspace B: draft decision DB_ (OB1 × CB1 scored).
+const D = {
+  A: '20000000-0000-4000-8000-00000000000a',
+  AF: '20000000-0000-4000-8000-0000000000af',
+  B: '20000000-0000-4000-8000-00000000000b',
+} as const
+const LINEAGE_A = '21000000-0000-4000-8000-00000000000a'
+const O = {
+  A1: '30000000-0000-4000-8000-0000000000a1',
+  A2: '30000000-0000-4000-8000-0000000000a2',
+  F1: '30000000-0000-4000-8000-0000000000f1',
+  B1: '30000000-0000-4000-8000-0000000000b1',
+} as const
+const C = {
+  A1: '40000000-0000-4000-8000-0000000000a1',
+  A2: '40000000-0000-4000-8000-0000000000a2',
+  F1: '40000000-0000-4000-8000-0000000000f1',
+  B1: '40000000-0000-4000-8000-0000000000b1',
+} as const
+const DECISION_TABLES = ['decisions', 'options', 'criteria', 'scores'] as const
+type DecisionTable = (typeof DECISION_TABLES)[number]
+
 /**
  * The isolation matrix. `ofA` selects workspace A's rows (rows UB must never see or change);
  * `probe` is a SET clause an attacker would try. P1.5+ appends its tables here.
  */
-const TENANT_TABLES: { table: Table; ofA: string; probe: string }[] = [
+const TENANT_TABLES: { table: Table | DecisionTable; ofA: string; probe: string }[] = [
   { table: 'workspaces', ofA: `id = '${WA}'`, probe: `name = 'pwned'` },
   { table: 'memberships', ofA: `workspace_id = '${WA}'`, probe: `role = 'viewer'` },
   { table: 'invites', ofA: `workspace_id = '${WA}'`, probe: `role = 'owner'` },
@@ -62,6 +89,10 @@ const TENANT_TABLES: { table: Table; ofA: string; probe: string }[] = [
     ofA: `user_id in (${A_ONLY_USERS.map((u) => `'${u}'`).join(',')})`,
     probe: `display_name = 'pwned'`,
   },
+  { table: 'decisions', ofA: `workspace_id = '${WA}'`, probe: `question = 'pwned'` },
+  { table: 'options', ofA: `workspace_id = '${WA}'`, probe: `name = 'pwned'` },
+  { table: 'criteria', ofA: `workspace_id = '${WA}'`, probe: `weight = 0` },
+  { table: 'scores', ofA: `workspace_id = '${WA}'`, probe: `value = 1` },
 ]
 
 // --- harness -----------------------------------------------------------------------------------
@@ -214,6 +245,29 @@ beforeAll(async () => {
     insert into themis.invites (workspace_id, email, role, token_hash, expires_at, updated_at) values
       ('${WA}', 'new-a@example.com', 'editor', repeat('a', 64), now() + interval '7 days', '${OLD}'),
       ('${WB}', 'new-b@example.com', 'viewer', repeat('b', 64), now() + interval '7 days', '${OLD}');
+    insert into themis.decisions (id, workspace_id, lineage_id, question, methodology, scale, status,
+                                  frozen, approved_by, approved_at, created_by, updated_at) values
+      ('${D.A}', '${WA}', '${LINEAGE_A}', 'Draft A', 'agile', 'mid', 'draft',
+       false, null, null, '${U.ownerA}', '${OLD}'),
+      ('${D.AF}', '${WA}', gen_random_uuid(), 'Approved A', 'waterfall', 'enterprise', 'approved',
+       true, '${U.ownerA}', now(), '${U.ownerA}', '${OLD}'),
+      ('${D.B}', '${WB}', gen_random_uuid(), 'Draft B', 'yolo', 'small', 'draft',
+       false, null, null, '${U.ownerB}', '${OLD}');
+    insert into themis.options (id, workspace_id, decision_id, name, position, updated_at) values
+      ('${O.A1}', '${WA}', '${D.A}', 'Option A1', 0, '${OLD}'),
+      ('${O.A2}', '${WA}', '${D.A}', 'Option A2', 1, '${OLD}'),
+      ('${O.F1}', '${WA}', '${D.AF}', 'Option F1', 0, '${OLD}'),
+      ('${O.B1}', '${WB}', '${D.B}', 'Option B1', 0, '${OLD}');
+    insert into themis.criteria (id, workspace_id, decision_id, name, weight, position, updated_at) values
+      ('${C.A1}', '${WA}', '${D.A}', 'Cost', 4, 0, '${OLD}'),
+      ('${C.A2}', '${WA}', '${D.A}', 'Risk', 2, 1, '${OLD}'),
+      ('${C.F1}', '${WA}', '${D.AF}', 'Speed', 3, 0, '${OLD}'),
+      ('${C.B1}', '${WB}', '${D.B}', 'Cost', 5, 0, '${OLD}');
+    insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value, updated_at) values
+      ('${WA}', '${D.A}', '${O.A1}', '${C.A1}', 4, '${OLD}'),
+      ('${WA}', '${D.A}', '${O.A2}', '${C.A1}', 2, '${OLD}'),
+      ('${WA}', '${D.AF}', '${O.F1}', '${C.F1}', 5, '${OLD}'),
+      ('${WB}', '${D.B}', '${O.B1}', '${C.B1}', 3, '${OLD}');
   `)
 }, 60_000)
 
@@ -633,6 +687,7 @@ describe('cross-workspace isolation: owner of B against workspace A', () => {
       expect(await s.count('memberships', `workspace_id = '${WB}'`)).toBe(1)
       expect(await s.count('invites', `workspace_id = '${WB}'`)).toBe(1)
       expect(await s.count('profiles', `user_id = '${U.ownerB}'`)).toBe(1)
+      for (const t of DECISION_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
     })
   })
 
@@ -918,4 +973,889 @@ describe('decision core (P1.5): the DB enums match src/lib/decision.ts exactly',
   ])('decisions.%s allows exactly the decision.ts values', async (col, ts) => {
     expect(await allowed(col)).toEqual([...ts].sort())
   })
+})
+
+// =================================================================================================
+// P1.5 decision core — structure
+// =================================================================================================
+
+const TSZ_ = 'timestamp with time zone'
+const columnsOf = async (t: string) =>
+  (
+    await db.query<{ c: string }>(
+      `select a.attname || ':' || format_type(a.atttypid, a.atttypmod)
+              || case when a.attnotnull then '!' else '' end as c
+         from pg_attribute a
+        where a.attrelid = $1::regclass and a.attnum > 0 and not a.attisdropped
+        order by a.attnum`,
+      [`themis.${t}`],
+    )
+  ).rows.map((r) => r.c)
+
+const PRIVS_ = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']
+/** Table verbs `role` holds on themis.<t>, directly or through any column grant. */
+const privsOf = async (role: string, t: string) =>
+  (
+    await db.query<{ p: string }>(
+      `select p from unnest($3::text[]) p
+        where has_table_privilege($1, $2, p)
+           or (p in ('SELECT','INSERT','UPDATE','REFERENCES') and has_any_column_privilege($1, $2, p))`,
+      [role, `themis.${t}`, PRIVS_],
+    )
+  ).rows.map((r) => r.p)
+
+/** Postgres refused because of a (named) foreign key. */
+const fkRefused = (o: Outcome, constraint: string) =>
+  !o.ok && o.error.includes('violates foreign key constraint') && o.error.includes(constraint)
+const checkRefused = (o: Outcome, constraint?: string) =>
+  !o.ok &&
+  o.error.includes('violates check constraint') &&
+  (constraint === undefined || o.error.includes(constraint))
+const dupRefused = (o: Outcome, constraint: string) =>
+  !o.ok && o.error.includes('duplicate key') && o.error.includes(constraint)
+
+/** Content hash of every decision-core row of workspace `ws` (read as superuser). */
+const decisionCoreSnapshot = async (s: Session, ws: string) => {
+  const out: Record<string, unknown> = {}
+  for (const t of DECISION_TABLES) out[t] = await snapshot(s, t, `workspace_id = '${ws}'`)
+  return out
+}
+
+describe('decision core (P1.5): table shapes and keys', () => {
+  it.each([
+    [
+      'decisions',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'lineage_id:uuid!',
+        'revision:integer!',
+        'question:text!',
+        'methodology:text!',
+        'scale:text!',
+        'status:text!',
+        'frozen:boolean!',
+        'approved_by:uuid',
+        `approved_at:${TSZ_}`,
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'options',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'name:text!',
+        'position:smallint!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'criteria',
+      [
+        'id:uuid!',
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'name:text!',
+        'weight:smallint!',
+        'position:smallint!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+    [
+      'scores',
+      [
+        'workspace_id:uuid!',
+        'decision_id:uuid!',
+        'option_id:uuid!',
+        'criterion_id:uuid!',
+        'value:smallint!',
+        'created_by:uuid',
+        `created_at:${TSZ_}!`,
+        `updated_at:${TSZ_}!`,
+      ],
+    ],
+  ] as const)('themis.%s has the planned columns, types and NOT NULLs', async (t, want) => {
+    expect(await columnsOf(t)).toEqual(want)
+  })
+
+  it('primary and unique keys are exactly the planned ones', async () => {
+    const r = await db.query<{ k: string }>(
+      `select c.conrelid::regclass::text || ' ' || c.conname || ' ' || c.contype::text || ' (' ||
+              (select string_agg(a.attname, ',' order by k.ord)
+                 from unnest(c.conkey) with ordinality k(n, ord)
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n) || ')' as k
+         from pg_constraint c
+        where c.contype in ('p', 'u') and c.conrelid::regclass::text = any ($1::text[])`,
+      [DECISION_TABLES.map((t) => `themis.${t}`)],
+    )
+    expect(r.rows.map((x) => x.k).sort()).toEqual(
+      [
+        'themis.decisions decisions_pkey p (id)',
+        'themis.decisions decisions_id_workspace_id_key u (id,workspace_id)',
+        'themis.decisions decisions_lineage_id_revision_key u (lineage_id,revision)',
+        'themis.options options_pkey p (id)',
+        'themis.options options_id_decision_id_key u (id,decision_id)',
+        'themis.criteria criteria_pkey p (id)',
+        'themis.criteria criteria_id_decision_id_key u (id,decision_id)',
+        'themis.scores scores_pkey p (option_id,criterion_id)',
+      ].sort(),
+    )
+  })
+
+  it('foreign keys: children reach decisions only through the composite (decision_id, workspace_id)', async () => {
+    const cols = (rel: string, key: string) =>
+      `(select string_agg(a.attname, ',' order by k.ord)
+          from unnest(c.${key}) with ordinality k(n, ord)
+          join pg_attribute a on a.attrelid = c.${rel} and a.attnum = k.n)`
+    const r = await db.query<{ fk: string }>(
+      `select c.conrelid::regclass::text || '(' || ${cols('conrelid', 'conkey')} || ')->' ||
+              c.confrelid::regclass::text || '(' || ${cols('confrelid', 'confkey')} || ') ' ||
+              c.confdeltype::text as fk
+         from pg_constraint c
+        where c.contype = 'f' and c.conrelid::regclass::text = any ($1::text[])`,
+      [DECISION_TABLES.map((t) => `themis.${t}`)],
+    )
+    // c = cascade, n = set null. No child has a direct FK to workspaces (DECISIONS.md P1.5).
+    expect(r.rows.map((x) => x.fk).sort()).toEqual(
+      [
+        'themis.decisions(workspace_id)->themis.workspaces(id) c',
+        'themis.decisions(approved_by)->auth.users(id) n',
+        'themis.decisions(created_by)->auth.users(id) n',
+        'themis.options(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.options(created_by)->auth.users(id) n',
+        'themis.criteria(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.criteria(created_by)->auth.users(id) n',
+        'themis.scores(decision_id,workspace_id)->themis.decisions(id,workspace_id) c',
+        'themis.scores(option_id,decision_id)->themis.options(id,decision_id) c',
+        'themis.scores(criterion_id,decision_id)->themis.criteria(id,decision_id) c',
+        'themis.scores(created_by)->auth.users(id) n',
+      ].sort(),
+    )
+  })
+})
+
+describe('decision core (P1.5): RLS, policies and grants', () => {
+  it.each(DECISION_TABLES)('RLS is enabled on themis.%s', async (t) => {
+    const r = await db.query<{ on: boolean }>(
+      `select relrowsecurity as on from pg_class where oid = $1::regclass`,
+      [`themis.${t}`],
+    )
+    expect(r.rows[0].on).toBe(true)
+  })
+
+  it('the policy set is exactly select/insert/update/delete per table, all TO authenticated', async () => {
+    const r = await db.query<{ p: string }>(
+      `select c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' || p.polroles::regrole[]::text as p
+         from pg_policy p join pg_class c on c.oid = p.polrelid
+        where c.relnamespace = 'themis'::regnamespace and c.relname = any ($1::text[])`,
+      [[...DECISION_TABLES]],
+    )
+    const want = DECISION_TABLES.flatMap((t) =>
+      [
+        ['select', 'r'],
+        ['insert', 'a'],
+        ['update', 'w'],
+        ['delete', 'd'],
+      ].map(([verb, cmd]) => `${t}.${t}_${verb} ${cmd} {authenticated}`),
+    )
+    expect(r.rows.map((x) => x.p).sort()).toEqual(want.sort())
+  })
+
+  it.each(DECISION_TABLES)('anon holds no privilege (table or column) on themis.%s', async (t) => {
+    expect(await privsOf('anon', t)).toEqual([])
+  })
+
+  it.each(DECISION_TABLES)(
+    'themis.%s is granted to authenticated and service_role only',
+    async (t) => {
+      const r = await db.query<{ g: string }>(
+        `select distinct grantee as g from information_schema.role_table_grants
+          where table_schema = 'themis' and table_name = $1
+         union
+         select distinct grantee from information_schema.column_privileges
+          where table_schema = 'themis' and table_name = $1
+         order by 1`,
+        [t],
+      )
+      expect(r.rows.map((x) => x.g).filter((g) => g !== 'postgres')).toEqual([
+        'authenticated',
+        'service_role',
+      ])
+    },
+  )
+
+  it('authenticated: SELECT/DELETE on the table, INSERT/UPDATE only on the exact planned columns', async () => {
+    for (const t of DECISION_TABLES) {
+      expect(await privsOf('authenticated', t), t).toEqual(['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
+      // Writes are column-level only: no table-wide INSERT or UPDATE.
+      const [w] = (
+        await db.query<{ ins: boolean; upd: boolean }>(
+          `select has_table_privilege('authenticated', $1, 'INSERT') as ins,
+                  has_table_privilege('authenticated', $1, 'UPDATE') as upd`,
+          [`themis.${t}`],
+        )
+      ).rows
+      expect(w, t).toEqual({ ins: false, upd: false })
+    }
+    const cols = await db.query<{ c: string }>(
+      `select table_name || '.' || column_name || ' ' || privilege_type as c
+         from information_schema.column_privileges
+        where table_schema = 'themis' and grantee = 'authenticated'
+          and privilege_type in ('INSERT', 'UPDATE') and table_name = any ($1::text[])`,
+      [[...DECISION_TABLES]],
+    )
+    expect(cols.rows.map((r) => r.c).sort()).toEqual(
+      [
+        'decisions.workspace_id INSERT',
+        'decisions.question INSERT',
+        'decisions.question UPDATE',
+        'decisions.methodology INSERT',
+        'decisions.methodology UPDATE',
+        'decisions.scale INSERT',
+        'decisions.scale UPDATE',
+        'options.workspace_id INSERT',
+        'options.decision_id INSERT',
+        'options.name INSERT',
+        'options.name UPDATE',
+        'options.position INSERT',
+        'options.position UPDATE',
+        'criteria.workspace_id INSERT',
+        'criteria.decision_id INSERT',
+        'criteria.name INSERT',
+        'criteria.name UPDATE',
+        'criteria.weight INSERT',
+        'criteria.weight UPDATE',
+        'criteria.position INSERT',
+        'criteria.position UPDATE',
+        'scores.workspace_id INSERT',
+        'scores.decision_id INSERT',
+        'scores.option_id INSERT',
+        'scores.criterion_id INSERT',
+        'scores.value INSERT',
+        'scores.value UPDATE',
+      ].sort(),
+    )
+  })
+
+  it('service_role has full DML on the four decision tables', async () => {
+    for (const t of DECISION_TABLES)
+      expect(await privsOf('service_role', t), t).toEqual(
+        expect.arrayContaining(['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
+      )
+  })
+})
+
+// =================================================================================================
+// P1.5 decision core — behaviour
+// =================================================================================================
+
+describe('decision core (P1.5): visibility', () => {
+  it.each(DECISION_TABLES)('anon cannot read themis.%s', (t) =>
+    actAs(ANON, async (s) => {
+      expect(refused(await s.attempt(`select * from themis.${t}`))).toBe(true)
+    }),
+  )
+
+  it('anon cannot create a decision', () =>
+    actAs(ANON, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.decisions (workspace_id, question, methodology, scale)
+         values ($1, 'q', 'agile', 'mid')`,
+        [WA],
+      )
+      expect(refused(o), JSON.stringify(o)).toBe(true)
+    }))
+
+  it('a member of A sees all of A and nothing of B', () =>
+    actAs(U.viewerA, async (s) => {
+      expect(await s.count('decisions')).toBe(2)
+      expect(await s.count('options')).toBe(3)
+      expect(await s.count('criteria')).toBe(3)
+      expect(await s.count('scores')).toBe(3)
+      for (const t of DECISION_TABLES) expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(0)
+    }))
+
+  it('a user with no workspace sees no decision-core rows', () =>
+    actAs(U.loner, async (s) => {
+      for (const t of DECISION_TABLES) expect(await s.count(t), t).toBe(0)
+    }))
+})
+
+describe('decision core (P1.5): cross-tenant child writes by the owner of B', () => {
+  it.each([
+    ['options', 'name', `'x'`],
+    ['criteria', 'name', `'x'`],
+  ] as const)(
+    "a %s row claiming workspace B but pointing at A's decision is refused by the composite FK",
+    (t, col, val) =>
+      actAs(U.ownerB, async (s) => {
+        const before = await decisionCoreSnapshot(s, WA)
+        const o = await s.attempt(
+          `insert into themis.${t} (workspace_id, decision_id, ${col}) values ($1, $2, ${val})`,
+          [WB, D.A],
+        )
+        expect(fkRefused(o, `${t}_decision_fkey`), JSON.stringify(o)).toBe(true)
+        expect(await decisionCoreSnapshot(s, WA)).toEqual(before)
+      }),
+  )
+
+  it.each([['options'], ['criteria']] as const)(
+    'a %s row claiming workspace A is refused by RLS',
+    (t) =>
+      actAs(U.ownerB, async (s) => {
+        const o = await s.attempt(
+          `insert into themis.${t} (workspace_id, decision_id, name) values ($1, $2, 'x')`,
+          [WA, D.A],
+        )
+        expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates row-level security/)
+        await s.sudo(async () => expect(await s.count(t, `decision_id = '${D.A}'`)).toBe(2))
+      }),
+  )
+
+  it("a score claiming workspace B on A's decision/option/criterion is refused by the composite FK", () =>
+    actAs(U.ownerB, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+         values ($1, $2, $3, $4, 5)`,
+        [WB, D.A, O.A2, C.A2],
+      )
+      expect(fkRefused(o, 'scores_decision_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+
+  it("a score on B's own decision that points at A's option is refused (option pinned to decision)", () =>
+    actAs(U.ownerB, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+         values ($1, $2, $3, $4, 5)`,
+        [WB, D.B, O.A2, C.B1],
+      )
+      expect(fkRefused(o, 'scores_option_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+
+  it('a score claiming workspace A is refused by RLS', () =>
+    actAs(U.ownerB, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+         values ($1, $2, $3, $4, 5)`,
+        [WA, D.A, O.A2, C.A2],
+      )
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates row-level security/)
+      await s.sudo(async () => expect(await s.count('scores', `workspace_id = '${WA}'`)).toBe(3))
+    }))
+
+  it('B cannot create a decision in A', () =>
+    actAs(U.ownerB, async (s) => {
+      const o = await s.attempt(
+        `insert into themis.decisions (workspace_id, question, methodology, scale)
+         values ($1, 'x', 'agile', 'mid')`,
+        [WA],
+      )
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates row-level security/)
+    }))
+
+  it("B cannot re-point its own rows at A's decision (tenancy keys are not updatable)", () =>
+    actAs(U.ownerB, async (s) => {
+      for (const sql of [
+        `update themis.options set decision_id = '${D.A}' where id = '${O.B1}'`,
+        `update themis.options set workspace_id = '${WA}' where id = '${O.B1}'`,
+        `update themis.criteria set decision_id = '${D.A}' where id = '${C.B1}'`,
+        `update themis.scores set decision_id = '${D.A}' where option_id = '${O.B1}'`,
+        `update themis.decisions set workspace_id = '${WA}' where id = '${D.B}'`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+})
+
+describe('decision core (P1.5): a score cannot mix two decisions', () => {
+  const score = (s: Session, decision: string, option: string, criterion: string) =>
+    s.attempt(
+      `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+       values ($1, $2, $3, $4, 3)`,
+      [WA, decision, option, criterion],
+    )
+
+  it('positive control: an editor scores a free cell of one decision', () =>
+    actAs(U.editorA, async (s) => {
+      expect(await score(s, D.A, O.A2, C.A2)).toEqual({ ok: true, affected: 1 })
+    }))
+
+  it('an option of DA with a criterion of DAF is refused (criterion pinned to decision)', () =>
+    actAs(U.editorA, async (s) => {
+      const o = await score(s, D.A, O.A2, C.F1)
+      expect(fkRefused(o, 'scores_criterion_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+
+  it('an option of DAF with a criterion of DA is refused (option pinned to decision)', () =>
+    actAs(U.editorA, async (s) => {
+      const o = await score(s, D.A, O.F1, C.A2)
+      expect(fkRefused(o, 'scores_option_fkey'), JSON.stringify(o)).toBe(true)
+    }))
+
+  it('both ends from DA but decision_id = DAF is refused', () =>
+    actAs(U.editorA, async (s) => {
+      const o = await score(s, D.AF, O.A2, C.A2)
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(
+        /violates foreign key constraint "scores_(option|criterion)_fkey"/,
+      )
+    }))
+})
+
+describe('decision core (P1.5): role gating inside workspace A', () => {
+  it('viewer reads every table but every write is refused or has no effect', () =>
+    actAs(U.viewerA, async (s) => {
+      const before = await decisionCoreSnapshot(s, WA)
+      const inserts = [
+        `insert into themis.decisions (workspace_id, question, methodology, scale) values ('${WA}', 'v', 'agile', 'mid')`,
+        `insert into themis.options (workspace_id, decision_id, name) values ('${WA}', '${D.A}', 'v')`,
+        `insert into themis.criteria (workspace_id, decision_id, name) values ('${WA}', '${D.A}', 'v')`,
+        `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+           values ('${WA}', '${D.A}', '${O.A2}', '${C.A2}', 3)`,
+      ]
+      for (const sql of inserts) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+      const writes = [
+        `update themis.decisions set question = 'v' where id = '${D.A}'`,
+        `update themis.options set name = 'v' where id = '${O.A1}'`,
+        `update themis.criteria set weight = 0 where id = '${C.A1}'`,
+        `update themis.scores set value = 1 where option_id = '${O.A1}' and criterion_id = '${C.A1}'`,
+        `delete from themis.scores where workspace_id = '${WA}'`,
+        `delete from themis.options where workspace_id = '${WA}'`,
+        `delete from themis.criteria where workspace_id = '${WA}'`,
+        `delete from themis.decisions where workspace_id = '${WA}'`,
+      ]
+      for (const sql of writes) expect(await s.attempt(sql), sql).toEqual({ ok: true, affected: 0 })
+      expect(await decisionCoreSnapshot(s, WA)).toEqual(before)
+    }))
+
+  it.each([
+    ['editor', U.editorA],
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s creates a decision and writes options, criteria and scores', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const [d] = await s.rows<{ id: string }>(
+        `insert into themis.decisions (workspace_id, question, methodology, scale)
+         values ($1, 'New?', 'yolo', 'small') returning id`,
+        [WA],
+      )
+      const [o] = await s.rows<{ id: string }>(
+        `insert into themis.options (workspace_id, decision_id, name, position)
+         values ($1, $2, 'Opt', 0) returning id`,
+        [WA, d.id],
+      )
+      const [c] = await s.rows<{ id: string }>(
+        `insert into themis.criteria (workspace_id, decision_id, name, weight, position)
+         values ($1, $2, 'Crit', 5, 0) returning id`,
+        [WA, d.id],
+      )
+      expect(
+        await s.attempt(
+          `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+           values ($1, $2, $3, $4, 4)`,
+          [WA, d.id, o.id, c.id],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      // The score upsert the UI uses (PK = one row per cell).
+      expect(
+        await s.attempt(
+          `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+           values ($1, $2, $3, $4, 2)
+           on conflict (option_id, criterion_id) do update set value = excluded.value`,
+          [WA, d.id, o.id, c.id],
+        ),
+      ).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('scores', `option_id = '${o.id}' and value = 2`)).toBe(1)
+    }),
+  )
+
+  it.each([
+    ['editor', U.editorA],
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s edits a draft decision and its children, and deletes them', (_r, uid) =>
+    actAs(uid, async (s) => {
+      for (const sql of [
+        `update themis.decisions set question = 'Edited', methodology = 'waterfall', scale = 'enterprise' where id = '${D.A}'`,
+        `update themis.options set name = 'Renamed', position = 5 where id = '${O.A1}'`,
+        `update themis.criteria set name = 'Renamed', weight = 0, position = 5 where id = '${C.A1}'`,
+        `update themis.scores set value = 1 where option_id = '${O.A1}' and criterion_id = '${C.A1}'`,
+        `delete from themis.scores where option_id = '${O.A2}' and criterion_id = '${C.A1}'`,
+        `delete from themis.options where id = '${O.A2}'`,
+        `delete from themis.criteria where id = '${C.A2}'`,
+      ])
+        expect(await s.attempt(sql), sql).toEqual({ ok: true, affected: 1 })
+      expect(await s.count('decisions', `id = '${D.A}' and question = 'Edited'`)).toBe(1)
+      expect(await s.attempt(`delete from themis.decisions where id = $1`, [D.A])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+    }),
+  )
+
+  // Every lifecycle / identity / tenancy column, with a value that would otherwise be valid, so
+  // only the column grant can refuse it.
+  const DECISION_LOCKED: [string, string][] = [
+    ['status', `'in_review'`],
+    ['frozen', 'false'],
+    ['approved_by', `'${U.ownerA}'`],
+    ['approved_at', 'now()'],
+    ['lineage_id', 'gen_random_uuid()'],
+    ['revision', '2'],
+    ['created_by', `'${U.editorA}'`],
+    ['id', 'gen_random_uuid()'],
+    ['workspace_id', `'${WA}'`],
+    ['created_at', 'now()'],
+    ['updated_at', 'now()'],
+  ]
+
+  it.each([
+    ['editor', U.editorA],
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s cannot UPDATE any lifecycle column of a draft decision', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const before = await snapshot(s, 'decisions', `id = '${D.A}'`)
+      for (const [col, val] of DECISION_LOCKED) {
+        const o = await s.attempt(`update themis.decisions set ${col} = ${val} where id = $1`, [
+          D.A,
+        ])
+        expect(refused(o), `${col}: ${JSON.stringify(o)}`).toBe(true)
+      }
+      expect(await snapshot(s, 'decisions', `id = '${D.A}'`)).toEqual(before)
+    }),
+  )
+
+  it.each([
+    ['editor', U.editorA],
+    ['owner', U.ownerA],
+  ])('%s cannot INSERT a decision that presets a lifecycle column', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const presets: [string, string][] = [
+        ['status', `'approved'`],
+        ['frozen', 'false'],
+        ['approved_by', `'${U.ownerA}'`],
+        ['approved_at', 'now()'],
+        // Forging a revision into another lineage would block its real next revision.
+        ['lineage_id', `'${LINEAGE_A}'`],
+        ['revision', '7'],
+        ['created_by', `'${U.ownerB}'`],
+        ['id', 'gen_random_uuid()'],
+      ]
+      for (const [col, val] of presets) {
+        const o = await s.attempt(
+          `insert into themis.decisions (workspace_id, question, methodology, scale, ${col})
+           values ('${WA}', 'q', 'agile', 'mid', ${val})`,
+        )
+        expect(refused(o), `${col}: ${JSON.stringify(o)}`).toBe(true)
+      }
+      await s.sudo(async () => expect(await s.count('decisions', `workspace_id = '${WA}'`)).toBe(2))
+    }),
+  )
+
+  it('an owner cannot rewrite identity, tenancy or created_by columns of children', () =>
+    actAs(U.ownerA, async (s) => {
+      for (const sql of [
+        `update themis.options set id = gen_random_uuid() where id = '${O.A1}'`,
+        `update themis.options set created_by = '${U.ownerB}' where id = '${O.A1}'`,
+        `update themis.options set decision_id = '${D.AF}' where id = '${O.A1}'`,
+        `update themis.criteria set id = gen_random_uuid() where id = '${C.A1}'`,
+        `update themis.criteria set created_by = '${U.ownerB}' where id = '${C.A1}'`,
+        `update themis.criteria set workspace_id = '${WA}' where id = '${C.A1}'`,
+        `update themis.scores set option_id = '${O.A2}' where option_id = '${O.A1}' and criterion_id = '${C.A1}'`,
+        `update themis.scores set criterion_id = '${C.A2}' where option_id = '${O.A1}' and criterion_id = '${C.A1}'`,
+        `update themis.scores set created_by = '${U.ownerB}' where option_id = '${O.A1}'`,
+        `insert into themis.options (workspace_id, decision_id, name, created_by) values ('${WA}', '${D.A}', 'x', '${U.ownerB}')`,
+        `insert into themis.criteria (id, workspace_id, decision_id, name) values (gen_random_uuid(), '${WA}', '${D.A}', 'x')`,
+      ]) {
+        const o = await s.attempt(sql)
+        expect(refused(o), `${sql} -> ${JSON.stringify(o)}`).toBe(true)
+      }
+    }))
+
+  it.each([
+    ['editor', U.editorA],
+    ['admin', U.adminA],
+    ['owner', U.ownerA],
+  ])('%s cannot update or delete a frozen (approved) decision', (_r, uid) =>
+    actAs(uid, async (s) => {
+      const before = await snapshot(s, 'decisions', `id = '${D.AF}'`)
+      expect(
+        await s.attempt(`update themis.decisions set question = 'Tampered' where id = $1`, [D.AF]),
+      ).toEqual({ ok: true, affected: 0 })
+      expect(
+        await s.attempt(`update themis.decisions set methodology = 'yolo' where id = $1`, [D.AF]),
+      ).toEqual({ ok: true, affected: 0 })
+      expect(await s.attempt(`delete from themis.decisions where id = $1`, [D.AF])).toEqual({
+        ok: true,
+        affected: 0,
+      })
+      expect(await snapshot(s, 'decisions', `id = '${D.AF}'`)).toEqual(before)
+      // Still visible: frozen is read-only, not hidden.
+      expect(await s.count('decisions', `id = '${D.AF}'`)).toBe(1)
+    }),
+  )
+})
+
+describe('decision core (P1.5): check and unique constraints (as superuser)', () => {
+  const decision = (s: Session, cols: Record<string, unknown>) => {
+    const all: Record<string, unknown> = {
+      workspace_id: WA,
+      methodology: 'agile',
+      scale: 'mid',
+      ...cols,
+    }
+    const k = Object.keys(all)
+    return s.attempt(
+      `insert into themis.decisions (${k.join(', ')}) values (${k.map((_, i) => `$${i + 1}`).join(', ')})`,
+      Object.values(all),
+    )
+  }
+  const criterion = (s: Session, weight: number) =>
+    s.attempt(
+      `insert into themis.criteria (workspace_id, decision_id, name, weight) values ($1, $2, 'w', $3)`,
+      [WA, D.A, weight],
+    )
+  const score = (s: Session, option: string, criterion: string, value: number) =>
+    s.attempt(
+      `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+       values ($1, $2, $3, $4, $5)`,
+      [WA, D.A, option, criterion, value],
+    )
+  const OK = { ok: true, affected: 1 }
+
+  it('criterion weight is 0..5: -1 and 6 refused, 0 and 5 accepted', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(checkRefused(await criterion(s, -1), 'criteria_weight_check')).toBe(true)
+      expect(checkRefused(await criterion(s, 6), 'criteria_weight_check')).toBe(true)
+      expect(await criterion(s, 0)).toEqual(OK)
+      expect(await criterion(s, 5)).toEqual(OK)
+    }))
+
+  it('score value is 1..5: 0 and 6 refused, 1 and 5 accepted, update to 6 refused', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(checkRefused(await score(s, O.A2, C.A2, 0), 'scores_value_check')).toBe(true)
+      expect(checkRefused(await score(s, O.A2, C.A2, 6), 'scores_value_check')).toBe(true)
+      expect(await score(s, O.A2, C.A2, 1)).toEqual(OK)
+      expect(await score(s, O.A1, C.A2, 5)).toEqual(OK)
+      const up = await s.attempt(
+        `update themis.scores set value = 6 where option_id = $1 and criterion_id = $2`,
+        [O.A1, C.A1],
+      )
+      expect(checkRefused(up, 'scores_value_check'), JSON.stringify(up)).toBe(true)
+    }))
+
+  it('one score per cell: a second row for (option, criterion) is refused', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(dupRefused(await score(s, O.A1, C.A1, 2), 'scores_pkey')).toBe(true)
+    }))
+
+  it('revision must be >= 1', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(checkRefused(await decision(s, { revision: 0 }), 'decisions_revision_check')).toBe(
+        true,
+      )
+      expect(checkRefused(await decision(s, { revision: -1 }), 'decisions_revision_check')).toBe(
+        true,
+      )
+      expect(await decision(s, { revision: 1 })).toEqual(OK)
+    }))
+
+  it('frozen requires approved_at', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(
+        checkRefused(
+          await decision(s, { frozen: true, status: 'draft' }),
+          'decisions_frozen_needs_approval',
+        ),
+      ).toBe(true)
+      expect(
+        await decision(s, {
+          frozen: true,
+          status: 'approved',
+          approved_at: '2026-09-28T12:00:00Z',
+        }),
+      ).toEqual(OK)
+      // Unsetting approved_at on the frozen fixture decision is refused too.
+      const o = await s.attempt(`update themis.decisions set approved_at = null where id = $1`, [
+        D.AF,
+      ])
+      expect(!o.ok && o.error, JSON.stringify(o)).toMatch(/violates check constraint/)
+    }))
+
+  it('status approved requires approved_at', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(
+        checkRefused(await decision(s, { status: 'approved' }), 'decisions_approved_needs_time'),
+      ).toBe(true)
+      expect(
+        await decision(s, { status: 'approved', approved_at: '2026-09-28T12:00:00Z' }),
+      ).toEqual(OK)
+    }))
+
+  it('status is one of draft|in_review|approved|rejected|archived', () =>
+    actAs(SUPERUSER, async (s) => {
+      for (const bad of ['done', 'Draft', 'frozen', ''])
+        expect(checkRefused(await decision(s, { status: bad })), bad).toBe(true)
+      for (const ok of ['draft', 'in_review', 'rejected', 'archived'])
+        expect(await decision(s, { status: ok }), ok).toEqual(OK)
+    }))
+
+  it('methodology and scale reject values outside decision.ts', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(checkRefused(await decision(s, { methodology: 'scrum' }))).toBe(true)
+      expect(checkRefused(await decision(s, { scale: 'huge' }))).toBe(true)
+    }))
+
+  it('(lineage_id, revision) is unique across ALL workspaces; the next revision is free', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(
+        dupRefused(
+          await decision(s, { lineage_id: LINEAGE_A, revision: 1 }),
+          'decisions_lineage_id_revision_key',
+        ),
+      ).toBe(true)
+      expect(
+        dupRefused(
+          await decision(s, { workspace_id: WB, lineage_id: LINEAGE_A, revision: 1 }),
+          'decisions_lineage_id_revision_key',
+        ),
+      ).toBe(true)
+      expect(await decision(s, { lineage_id: LINEAGE_A, revision: 2 })).toEqual(OK)
+    }))
+
+  it('text limits: question <= 1000, option/criterion name <= 200, position >= 0', () =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await decision(s, { question: 'q'.repeat(1000) })).toEqual(OK)
+      expect(checkRefused(await decision(s, { question: 'q'.repeat(1001) }))).toBe(true)
+      for (const t of ['options', 'criteria']) {
+        const ins = (name: string, position = 0) =>
+          s.attempt(
+            `insert into themis.${t} (workspace_id, decision_id, name, position) values ($1, $2, $3, $4)`,
+            [WA, D.A, name, position],
+          )
+        expect(await ins('n'.repeat(200)), t).toEqual(OK)
+        expect(checkRefused(await ins('n'.repeat(201))), t).toBe(true)
+        expect(checkRefused(await ins('n', -1)), t).toBe(true)
+      }
+    }))
+})
+
+describe('decision core (P1.5): defaults and updated_at', () => {
+  it('created_by defaults to the caller on all four tables; a new decision starts as a clean draft', () =>
+    actAs(U.editorA, async (s) => {
+      const [d] = await s.rows<Row>(
+        `insert into themis.decisions (workspace_id, methodology, scale) values ($1, 'agile', 'mid')
+         returning id, created_by, revision, status, frozen, approved_by, approved_at, question,
+                   lineage_id`,
+        [WA],
+      )
+      expect(d).toMatchObject({
+        created_by: U.editorA,
+        revision: 1,
+        status: 'draft',
+        frozen: false,
+        approved_by: null,
+        approved_at: null,
+        question: '',
+      })
+      expect(d.lineage_id).not.toBe(LINEAGE_A)
+      const [o] = await s.rows<Row>(
+        `insert into themis.options (workspace_id, decision_id) values ($1, $2) returning id, created_by`,
+        [WA, d.id],
+      )
+      const [c] = await s.rows<Row>(
+        `insert into themis.criteria (workspace_id, decision_id) values ($1, $2)
+         returning id, created_by, weight`,
+        [WA, d.id],
+      )
+      const [sc] = await s.rows<Row>(
+        `insert into themis.scores (workspace_id, decision_id, option_id, criterion_id, value)
+         values ($1, $2, $3, $4, 3) returning created_by`,
+        [WA, d.id, o.id, c.id],
+      )
+      expect([o.created_by, c.created_by, sc.created_by]).toEqual([U.editorA, U.editorA, U.editorA])
+      expect(c.weight).toBe(3)
+    }))
+
+  it.each([
+    ['decisions', `question = 'x'`, `id = '${D.A}'`],
+    ['options', `name = 'x'`, `id = '${O.A1}'`],
+    ['criteria', `weight = 1`, `id = '${C.A1}'`],
+    ['scores', `value = 1`, `option_id = '${O.A1}' and criterion_id = '${C.A1}'`],
+  ])('an UPDATE on themis.%s bumps updated_at', (t, set, where) =>
+    actAs(SUPERUSER, async (s) => {
+      expect(await s.count(t, `${where} and updated_at = '${OLD}'`)).toBe(1)
+      await s.rows(`update themis.${t} set ${set} where ${where}`)
+      expect(
+        await s.count(t, `${where} and updated_at > '${OLD}'::timestamptz + interval '1 day'`),
+      ).toBe(1)
+    }),
+  )
+})
+
+describe('decision core (P1.5): cascades', () => {
+  it('deleting a draft decision cascades its options, criteria and scores only', () =>
+    actAs(U.editorA, async (s) => {
+      expect(await s.attempt(`delete from themis.decisions where id = $1`, [D.A])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        for (const t of ['options', 'criteria', 'scores'])
+          expect(await s.count(t, `decision_id = '${D.A}'`), t).toBe(0)
+        for (const t of ['options', 'criteria', 'scores']) {
+          expect(await s.count(t, `decision_id = '${D.AF}'`), t).toBe(1)
+          expect(await s.count(t, `decision_id = '${D.B}'`), t).toBe(1)
+        }
+      })
+    }))
+
+  it("deleting an option or a criterion removes that row's scores only", () =>
+    actAs(U.editorA, async (s) => {
+      await s.rows(`delete from themis.options where id = $1`, [O.A1])
+      await s.sudo(async () => {
+        expect(await s.count('scores', `option_id = '${O.A1}'`)).toBe(0)
+        expect(await s.count('scores', `option_id = '${O.A2}'`)).toBe(1)
+      })
+      await s.rows(`delete from themis.criteria where id = $1`, [C.A1])
+      await s.sudo(async () => {
+        expect(await s.count('scores', `decision_id = '${D.A}'`)).toBe(0)
+        expect(await s.count('scores', `decision_id = '${D.AF}'`)).toBe(1)
+      })
+    }))
+
+  it("the owner deleting workspace A removes all of A's decision core, frozen included; B intact", () =>
+    actAs(U.ownerA, async (s) => {
+      expect(await s.attempt(`delete from themis.workspaces where id = $1`, [WA])).toEqual({
+        ok: true,
+        affected: 1,
+      })
+      await s.sudo(async () => {
+        for (const t of DECISION_TABLES) {
+          expect(await s.count(t, `workspace_id = '${WA}'`), t).toBe(0)
+          expect(await s.count(t, `workspace_id = '${WB}'`), t).toBe(1)
+        }
+      })
+    }))
+
+  it('deleting an auth user nulls created_by and approved_by, keeping the decisions', () =>
+    actAs(SUPERUSER, async (s) => {
+      await s.rows(`delete from auth.users where id = $1`, [U.ownerA])
+      expect(
+        await s.count('decisions', `id = '${D.AF}' and created_by is null and approved_by is null`),
+      ).toBe(1)
+      expect(await s.count('decisions', `workspace_id = '${WA}'`)).toBe(2)
+    }))
 })
