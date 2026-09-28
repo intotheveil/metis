@@ -12,3 +12,7 @@
 - Passed: lint, typecheck, 16 tests, build; page rendered and inspected at 1440px and at a true
   390px width (iframe). A phone overflow was found that way and fixed.
 - BLOCKED: push/deploy. The gh token lacks the `workflow` scope (BRAIN §4 B1); waiting on the operator.
+
+## 2026-09-28 (deploy)
+
+- LIVE: https://intotheveil.github.io/themis/ (run 36448167598: verify + deploy success; assets 200).

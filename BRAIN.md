@@ -7,7 +7,7 @@
 
 **Last updated:** 2026-09-28 by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
-**Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** not yet: blocked on §4 B1. Target https://intotheveil.github.io/themis/
+**Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://intotheveil.github.io/themis/ (GitHub Pages, deployed by CI on every push to main)
 
 ---
 
@@ -47,7 +47,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 ## 3. CURRENT STATE (what's true RIGHT NOW)
 
-- **What's built (NOT yet live, see §4 B1):** P0 shell + a working client-side weighted decision matrix with
+- **What's live:** P0 shell + a working client-side weighted decision matrix with
   Waterfall/Agile/YOLO × small/mid/enterprise criteria presets. 16 tests (12 model, 4 UI), black-and-gold Themis brand.
 - **What's in progress:** nothing half-done.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
@@ -88,6 +88,12 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (deploy) — LIVE at https://intotheveil.github.io/themis/
+
+- Resolved: **B1.** The operator granted the gh `workflow` scope, `main` was pushed and Pages enabled (`build_type=workflow`). Run 36448167598 passed both verify and deploy. The live URL, JS, CSS and favicon all return 200, and a headless screenshot of the live page matches the local build.
+- Gotcha: Pages was enabled AFTER the first push, and that first run still deployed. Order does not matter for `build_type=workflow`.
+- Left off: P0 is live. Next is Q1 (scope), then an F1 spec.
 
 ### 2026-09-28 (later) — renamed Metis → Themis; brand applied; NOT yet deployed
 
