@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.10 CI runs the db gates) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.11 db:apply, the Management-API applier) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -117,6 +117,18 @@ call".
   update through: `actor` non-null → NULL with every other column unchanged. That is the `actor → auth.users on delete
 set null` FK action, so deleting a user (Themis or Hephaestus) works. No role holds UPDATE on audit_log; the FK action
   runs as the table owner and needs no grant.
+  **Live applier (P1.11):** `scripts/db-apply.mjs` (`npm run db:apply`, `-- --apply` to commit) over
+  `scripts/lib/mgmt-api.mjs` (the only HTTP code: `POST https://api.supabase.com/v1/projects/{ref}/database/query`,
+  body `{query}`, Bearer token; `fetch` injectable; every error has the token redacted; an error is a non-2xx status OR
+  a body that is not a JSON array). Env only: `SUPABASE_ACCESS_TOKEN` + `THEMIS_SUPABASE_PROJECT_REF`; if either is
+  missing it exits 2 and sends nothing. No .env file and no CLI. Order: the guard in-process (red → exit 1, zero requests)
+  → ledger via `to_regclass('themis.schema_migrations')` (absent = nothing applied) → refusals (checksum changed, applied
+  version without a file, out of order, transaction control in a file, incomplete PAIRED group) → PLAN printed → batches
+  `begin; set local lock_timeout='5s'; set local statement_timeout='60s'; <file>; insert into themis.schema_migrations
+(version, name, checksum) …; commit|rollback;`. Dry-run: batch k = pending units 1..k, rolled back. `--apply`: one
+  committed batch per unit, stops at the first error. **`PAIRED` (20260928235000 + 20260928235500) is one unit = one
+  transaction.** checksum = sha256 of the LF-normalised text. Exports `run({argv, env, fetch, dir, log, error})` (returns
+  the exit code), `plan`, `buildBatch`, `checksum`, `loadMigrations`, `findTransactionControl`, `readApplied`.
 - **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
   `VITE_SUPABASE_ANON_KEY` (unset, unused).
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
@@ -151,7 +163,9 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   `npm run db:gate:prove-red` proves the gate RED on 34 sabotages. P1.10 done locally (committed, NOT pushed): the CI
   `verify` job runs `db:check`, `db:gate` and `db:gate:prove-red` (4 jobs) after `npm test` and before `build`, so a
   red gate blocks the Pages deploy. The lead pushes it; the push needs the gh `workflow` scope (§5). A green PR run is
-  still to be observed. `db:apply` arrives in P1.11.
+  still to be observed. P1.11 done locally (committed, NOT pushed, never run live): `npm run db:apply`, the
+  Management-API applier (§2), with 35 tests on a fake fetch and PGlite; suite 467 tests. Nothing is applied live yet.
+  Next: P1.12 (snapshot/diff) and then P1.13 (the runbook).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -219,6 +233,11 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **The gate's verdict lines do not start with `FAIL`.** `GATE FAILED — …`, `APPLY FAILED` and `MIGRATION GUARD FAILED`
   are separate from the `FAIL  <check>` lines. Grepping only `^FAIL` for them misses them (the first P1.9 run went 31/34
   on exactly that). prove-red's `RED_LINE` matches all four. Found in P1.9.
+- **A migration checksum must hash LF-normalised text.** This desktop has core.autocrlf=true, so its checkout of a
+  migration is CRLF while CI's is LF. Raw-byte sha256 would call the same commit "changed". `db-apply.mjs` `checksum()`
+  normalises; any other tool that compares against `themis.schema_migrations.checksum` must do the same. Found in P1.11.
+- **A per-file rolled-back dry-run cannot work on a fresh ledger.** Each file needs the objects the earlier pending files
+  create. db:apply's dry-run therefore sends units 1..k in one rolled-back batch. Found in P1.11.
 - **In SQL, `text || "char"` is ambiguous.** Cast `polcmd`/`confdeltype` with `::text` before concatenating.
 
 - **Served at the domain root (`base: '/'`, ADR-0003).** It was `/themis/` while on github.io. Build every asset URL from
@@ -239,6 +258,17 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.11) — `npm run db:apply`: the Management-API applier
+
+- Did: NEW `scripts/db-apply.mjs`, NEW `scripts/lib/mgmt-api.mjs`, the `db:apply` script in `package.json`, and the two
+  env names in `.env.example`. NEW `scripts/db-apply.test.ts` (35 tests, fake fetch; 2 of them run the real batches on
+  PGlite + the gate shim). The behaviour is in §2. Suite 467 tests. lint, typecheck, db:check and db:gate are green.
+  NOT run against any live project (not even a read), and not pushed.
+- Decided (DECISIONS.md P1.11): the dry-run is cumulative (batch k = pending units 1..k, rolled back); the pair
+  20260928235000 + 20260928235500 is ONE transaction; checksums are LF-normalised; extra refusals (a file missing for an
+  applied version, out of order, transaction control inside a file).
+- Left off: P1.12 (snapshot/diff), then P1.13 (the runbook; the first live dry-run is an operator step there).
 
 ### 2026-09-28 (P1.10) — CI runs the db gates
 
@@ -478,6 +508,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 - **2026-09-28:** billing and AI ledgers (ai_runs, subscriptions, usage_monthly) are client read-only, service_role writes; audit_log is append-only for every role (trigger); plans is public reference data seeded with UNCONFIRMED proposal values (DECISIONS.md P1.7).
 - **2026-09-28:** audit_log's append-only trigger permits only the actor FK's SET NULL (actor → NULL, all else unchanged); no role gains UPDATE (DECISIONS.md "audit_log actor erasure").
 - **2026-09-28:** `db:gate:prove-red` counts a sabotage as RED only on exit 1 AND its expected FAIL line(s), with a green control run; sabotages are data in the script (DECISIONS.md P1.9).
+- **2026-09-28:** `db:apply` sends the pair 20260928235000 + 20260928235500 as ONE transaction, its dry-run is cumulative (units 1..k, rolled back), and checksums hash LF-normalised text (DECISIONS.md P1.11).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

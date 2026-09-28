@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "db:gate": "node scripts/db-gate.mjs",
     "db:check": "node scripts/check-migrations.mjs",
-    "db:gate:prove-red": "node scripts/db-gate-prove-red.mjs"
+    "db:gate:prove-red": "node scripts/db-gate-prove-red.mjs",
+    "db:apply": "node scripts/db-apply.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

@@ -250,3 +250,22 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   At 4 jobs the run takes 53 s on the desktop; about 1.5–2 min is expected on the runner. There is a 10 min step timeout.
 - **`db:check` is its own step** even though `db:gate` runs the guard first. A guard failure then shows up as its own
   red step in the PR, apart from a gate failure, and it costs about 1 s.
+
+## 2026-09-28 — P1.11: db:apply — cumulative dry-run, the pair as one transaction, LF checksums, extra refusals
+
+- **The dry-run is cumulative, not per file.** PLAN says each pending file is sent as `begin … rollback`. Rolled back one
+  by one, every file after the bootstrap would fail on a fresh ledger (the tenancy file needs schema `themis`, which the
+  rolled-back bootstrap threw away). So batch k holds pending units 1..k and ends in `rollback;`. Each file is still
+  tried, and a failure names the unit that broke. The cost is n requests with quadratic SQL size (6 files, about
+  100 KB total: negligible).
+- **A PAIRED group is ONE unit = ONE transaction** (`PAIRED` in `db-apply.mjs`: `20260928235000` + `20260928235500`).
+  This deviates from "one file per request" on purpose. With two requests, a failure of the second would leave the P1.7
+  trigger live without its fix, which breaks user deletion on the shared auth.users (Hephaestus). Each file still gets
+  its own ledger insert inside that transaction. A pending member without its partner in the archive is refused.
+- **The checksum is sha256 of the text with CRLF → LF.** This desktop checks out with core.autocrlf=true and CI with LF.
+  Hashing raw bytes would make the same commit "changed" depending on who applied it.
+- **Extra refusals beyond PLAN**, because the target is a live shared project: an applied version with no local file (a
+  stale checkout), a pending file older than the newest applied one (out of order), and a top-level transaction-control
+  statement in a pending file (a `commit;` or `end;` would end our transaction and COMMIT a dry-run).
+- **The ledger read uses `to_regclass`**, not the text of a "relation does not exist" error. It is the same meaning with
+  no string matching on server messages.

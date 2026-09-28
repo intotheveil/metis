@@ -625,3 +625,63 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - NOT pushed. The lead pushes this commit (the push needs the gh `workflow` scope, BRAIN §5) and watches the real CI
   run. The acceptance item "a PR run shows both steps green" can only be closed by that observed run.
 - Next: the lead's push and the observed CI run, then P1.11 ∥ P1.12.
+
+## 2026-09-28 — P1.11 `db:apply`: the Management-API applier
+
+- Did: NEW `scripts/db-apply.mjs` (the applier, `run()` returns the exit code, every dependency injectable), NEW
+  `scripts/lib/mgmt-api.mjs` (the only HTTP code: `POST https://api.supabase.com/v1/projects/{ref}/database/query`
+  with `{query}` and a Bearer token; `fetch` injectable; every error redacted), `package.json` script `db:apply`,
+  `.env.example` (the names `SUPABASE_ACCESS_TOKEN`, `THEMIS_SUPABASE_PROJECT_REF`, commented, no values). Tests:
+  NEW `scripts/db-apply.test.ts` (35 tests, typechecked via `tsconfig.scripts.json`, which includes `scripts/**/*.test.ts`).
+- Behaviour, in order:
+  1. Flags: only `--apply`; anything else exits 2. Env: token or ref missing/empty exits 2 with the names and sends
+     nothing. No .env file is read, no `supabase` CLI is spawned.
+  2. The static guard (`checkMigrationsDir`, i.e. `db:check`) runs in-process; red → `REFUSED`, exit 1, zero requests.
+  3. Ledger read: `select to_regclass('themis.schema_migrations') is not null` then `select version, name, checksum …`.
+     Absent = nothing applied (no error-text parsing). Never reads or writes `supabase_migrations.*`.
+  4. Refusals (exit 1, no migration sent): an applied file's sha256 changed; an applied version with no file; a pending
+     file older than the newest applied one; a pending file with top-level transaction control (begin/commit/end/
+     rollback/…, plpgsql bodies, strings and comments ignored); a PAIRED group with a member missing.
+  5. Prints the PLAN (pending files, sha256 prefix, the pair marked), then sends. Dry-run (default): for unit k, ONE
+     batch holding units 1..k ending in `rollback;`. `--apply`: ONE batch per unit ending in `commit;`, stop at the first
+     error ("N committed before it; M later not attempted").
+  6. Batch = `begin; set local lock_timeout = '5s'; set local statement_timeout = '60s'; <file>; insert into
+     themis.schema_migrations (version, name, checksum) values (…); [next file of the pair + its insert]; commit|rollback;`.
+  7. The response is an error if the status is not 2xx OR the body is not a JSON array (`{message}`/`{error}` payload,
+     even on 200). Exit 1.
+- The pair `20260928235000` + `20260928235500` is ONE unit = one transaction, so the audit_log trigger can never be live
+  without its actor-erasure fix, even if the second file fails (proven on PGlite). Missing second file → refused.
+- Checksum = sha256 of the text with CRLF normalised to LF (this desktop has core.autocrlf=true).
+- Dry-run output shape (fake fetch, real archive, empty ledger):
+  ```
+  db:apply — DRY-RUN (every batch ends in ROLLBACK; nothing is committed) · project <ref> · ledger themis.schema_migrations
+  PASS  migration guard: 6 migration(s) stay inside schema themis
+  ledger: themis.schema_migrations does not exist — nothing applied yet
+  PLAN  6 pending file(s) in 5 transaction(s):
+     1. 20260928200000_themis_schema.sql  sha256 cf85be6e40d6…
+     …
+     5. 20260928235000_themis_ai_billing_audit.sql  sha256 b4bc915f3477…  [paired: one transaction]
+        20260928235500_themis_audit_actor_erasure.sql  sha256 7cb7f63eb009…
+  OK    dry-run 20260928200000_themis_schema.sql — rolled back
+  OK    dry-run 20260928210000_themis_tenancy.sql (on top of 1 earlier pending unit(s)) — rolled back
+  …
+  DRY-RUN PASSED — 6 pending file(s) apply cleanly; everything was rolled back. Commit with: npm run db:apply -- --apply (operator's go only).
+  ```
+- Tests cover: missing env (both, each, empty) → exit 2 and zero requests; unknown flag; URL/method/Bearer header and the
+  token nowhere else; dry-run plan + all batches `rollback;` + ledger untouched; cumulative dry-run; dry-run failure
+  stops; batch shape (begin, both `set local`, file, then insert, then end; one `begin`); `--apply` one commit per unit
+  and the ledger rows; PLAN printed before the first batch; no-op when all applied; pending detection (3 applied → 2
+  units); checksum drift, missing file, out of order, guard red (zero requests), transaction control; the pair (one
+  unit, one transaction, both inserts; missing B refused; B failing leaves A uncommitted; A pending after B refused);
+  stop on first failure (2 committed, 3 not attempted); error payload on 200; token redaction in API errors, network
+  errors, `MgmtApiError`, `redact()`, bad ref. Two tests run the real batches through PGlite + the `db:gate` shim:
+  dry-run leaves no `themis` schema, `--apply` records all 6 with matching checksums while Hephaestus's 25 ledger rows
+  stay, a re-run is a no-op; and a SQL error appended to 20260928235500 rolls back 20260928235000 too (no audit_log).
+- Mutation check (scratch copies, restored): no redaction → 4 red; no pairing → 9 red; drift check off → 1 red; dry-run
+  commits → 2 red; no stop on failure → 4 red.
+- NOT run against any live project (no read either). No token was used; the fakes use a made-up marker.
+- Passed: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate`, exit 0. 467 tests
+  (432 + 35); guard 6 files; GATE PASSED. `npm run db:apply` with no env → exit 2 (observed).
+- Scope note: PLAN lists `scripts/db-apply.test.ts` under P1.12's test-writer; the lead asked for it here, so it landed
+  with P1.11. P1.12's test-writer still owns `db-snapshot.test.ts`.
+- Next: P1.12 (snapshot/diff), then P1.13 runbook. The live dry-run is an operator step (P1.13), not this task.
