@@ -59,7 +59,6 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 
 | id  | sev | type     | summary                                                                                                                                                                                                                                                                                                                                                                                                           | status | added      |
 | --- | --- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
-| F4  | 🔵  | feature  | Use the operator's actual Themis artwork (statue poster). It came only as a chat image, never as a file; the UI reproduces its style in SVG/CSS. If a file is saved to `public/brand/`, use it for the hero or an OG image                                                                                                                                                                                        | open   | 2026-09-28 |
 | F1  | 🟠  | feature  | AI analyst — challenge assumptions, suggest missing criteria, stress-test the winner. Needs a server-side proxy (never a key in the bundle) → reopens ADR-0001                                                                                                                                                                                                                                                    | open   | 2026-09-28 |
 | F2  | 🔵  | feature  | Persist/share decisions (localStorage first, Supabase EU when multi-user)                                                                                                                                                                                                                                                                                                                                         | open   | 2026-09-28 |
 | F3  | 🔵  | feature  | Playwright e2e against the production build; then name `e2e` in CLAUDE.md §8                                                                                                                                                                                                                                                                                                                                      | open   | 2026-09-28 |
@@ -87,6 +86,13 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (logo) — the operator's real artwork replaces the drawn mark
+
+- Did: the source is `C:\Users\Master\Documents\4M Studios\Themis Log.png` (1254², a poster, NOT committed; only crops are). PIL crops live in `public/brand/`: the bust (300,10)-(860,570) as `themis-bust.webp`, the THEMIS wordmark (280,640)-(990,800) as `themis-wordmark.webp`, and round-masked icons (`favicon.png` 64, `themis-icon.png` 96, `apple-touch-icon.png` 180). `og-themis.jpg` 512² adds a share preview. `Mark.tsx` and `favicon.svg` were removed. Resolved: F4.
+- Decided: the full poster is NOT shown on the page. It advertises Forecast, SWOT, scenario planning and more as working features, and none is built. Crops only, until those ship.
+- Gotcha: the wordmark crop carries the poster's dark backdrop, so it shows as a box on the page. `.brand-fade` masks all four edges (two gradients with `mask-composite: intersect`).
+- Gotcha: Vitest runs with `BASE_URL` = `/`, not `/themis/`. Asset URLs are asserted to derive from `BASE_URL`; the `/themis/` prefix is checked in the built bundle (`grep /themis/brand/ dist/assets/*.js`).
 
 ### 2026-09-28 (deploy) — LIVE at https://intotheveil.github.io/themis/
 

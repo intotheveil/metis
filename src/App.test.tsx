@@ -48,3 +48,12 @@ describe('brand', () => {
     expect(screen.getByText(/Not live yet/)).toBeInTheDocument()
   })
 })
+
+describe('brand assets', () => {
+  // Vitest runs with base "/"; the /themis/ prefix itself is checked against the production bundle.
+  it('builds artwork URLs from BASE_URL, so the Pages base path applies', () => {
+    render(<App />)
+    const bust = screen.getByAltText(/marble bust/)
+    expect(bust.getAttribute('src')).toBe(`${import.meta.env.BASE_URL}brand/themis-bust.webp`)
+  })
+})

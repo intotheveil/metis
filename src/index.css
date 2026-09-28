@@ -46,3 +46,13 @@ input[type='range'] {
 .rule-gold {
   background: linear-gradient(90deg, transparent, rgb(227 185 100 / 0.7), transparent);
 }
+
+/* The wordmark crop carries the poster's drapery at its edges; fade them into the page. */
+.brand-fade {
+  --fade-x: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
+  --fade-y: linear-gradient(180deg, transparent, #000 22%, #000 86%, transparent);
+  -webkit-mask-image: var(--fade-x), var(--fade-y);
+  -webkit-mask-composite: source-in;
+  mask-image: var(--fade-x), var(--fade-y);
+  mask-composite: intersect;
+}

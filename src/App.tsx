@@ -12,7 +12,10 @@ import {
   type Scale,
   type Scores,
 } from './lib/decision'
-import { Mark } from './Mark'
+
+// Brand art from the operator's Themis artwork (public/brand/, cropped from the source poster).
+// BASE_URL carries the Pages base path (/themis/) — a bare "/brand/…" 404s in production.
+const BRAND = `${import.meta.env.BASE_URL}brand/`
 
 // Modules from the brand brief that are NOT built yet — shown as roadmap, never as features.
 const ROADMAP = [
@@ -65,11 +68,25 @@ export default function App() {
       <main className="mx-auto max-w-7xl px-4 pb-24 sm:px-6 lg:px-8">
         <section className="flex flex-col items-center pt-14 pb-12 text-center sm:pt-20">
           <div className="relative">
-            <div className="absolute inset-0 -z-10 scale-150 rounded-full bg-accent/10 blur-3xl" />
-            <Mark className="h-24 w-24 sm:h-28 sm:w-28" />
+            <div className="absolute inset-0 -z-10 scale-125 rounded-full bg-accent/15 blur-3xl" />
+            <img
+              src={`${BRAND}themis-bust.webp`}
+              alt="Themis — marble bust with a golden laurel and the scales of judgement"
+              width={560}
+              height={560}
+              className="h-52 w-52 rounded-full object-cover ring-2 ring-accent/70 ring-offset-4 ring-offset-ink-950 shadow-[0_0_60px_-10px_rgb(227_185_100/0.45)] sm:h-64 sm:w-64"
+            />
           </div>
-          <h1 className="text-gold mt-8 font-display text-6xl font-semibold tracking-[0.12em] sm:text-8xl">
-            THEMIS
+          <h1 className="mt-10 w-full max-w-2xl">
+            <span className="sr-only">THEMIS</span>
+            <img
+              src={`${BRAND}themis-wordmark.webp`}
+              alt=""
+              aria-hidden
+              width={710}
+              height={160}
+              className="brand-fade mx-auto h-auto w-full"
+            />
           </h1>
           <p className="mt-4 font-display text-sm tracking-[0.42em] text-accent sm:text-base">
             DECISION INTELLIGENCE PLATFORM
@@ -325,7 +342,13 @@ function Header() {
     <header className="border-b border-ink-800/80 bg-ink-950/70 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         <div className="flex items-center gap-3">
-          <Mark className="h-9 w-9" />
+          <img
+            src={`${BRAND}themis-icon.png`}
+            alt=""
+            width={96}
+            height={96}
+            className="h-9 w-9 rounded-full ring-1 ring-accent/60"
+          />
           <span className="text-gold font-display text-lg font-semibold tracking-[0.2em]">
             THEMIS
           </span>
