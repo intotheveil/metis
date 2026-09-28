@@ -271,6 +271,24 @@ end $do$;`,
     ],
   },
   {
+    // B4 widened the guard to allow a READ `from auth.users`. This proves the widening did not
+    // open writes: an UPDATE of auth.users inside a definer function body (never run by the gate,
+    // so only the static guard can see it) must still stop the gate at the guard.
+    id: 'auth-users-write-in-function',
+    what: 'a definer function that reads auth.users (allowed) AND updates it (the guard must stay red)',
+    sql: `create or replace function themis.leak_email(new_email text) returns void
+language plpgsql security definer set search_path = '' as $fn$
+begin
+  perform 1 from auth.users u where u.id = auth.uid();
+  update auth.users set email = new_email where id = auth.uid();
+end $fn$;
+revoke execute on function themis.leak_email(text) from public, anon;`,
+    expect: [
+      `${SABOTAGE_FILE}:5  [forbidden-schema]  reference to auth.users`,
+      'GATE FAILED — the static migration guard is red',
+    ],
+  },
+  {
     id: 'anon-insert-plans',
     what: 'grant insert on themis.plans to anon',
     sql: `grant insert on table themis.plans to anon;`,

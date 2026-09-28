@@ -34,6 +34,10 @@ export async function installShim(db) {
     create table auth.users (
       id uuid primary key,
       email text,
+      -- Real Supabase has this column (nullable, no default). The shim defaults it to now() so
+      -- every user seedFixture creates with (id, email) is CONFIRMED, as a magic-link or OAuth
+      -- user is; a test that needs an unconfirmed user sets it to null explicitly (P2.6/P2.7).
+      email_confirmed_at timestamptz default now(),
       created_at timestamptz not null default now()
     );
     create or replace function auth.uid() returns uuid language sql stable

@@ -11,7 +11,10 @@
 //   filename            the name must match ^\d{14}_themis_[a-z0-9_]+\.sql$
 //   forbidden-schema    any reference into public / auth / storage / supabase_migrations
 //                       (qualified `x.y`, `schema x`, or a search_path naming x). The only allowed
-//                       auth references are `references auth.users` and `auth.uid()`.
+//                       auth references are `references auth.users`, `auth.uid()`, and a READ
+//                       `from auth.users` / `join auth.users` written as code (not `delete from`,
+//                       not in a string, no `for update|share`, not in create view/table or copy; see
+//                       isAuthUsersRead).
 //   target-outside-themis  a DDL/DML target (create/alter/drop table, view, function, type, …;
 //                       insert into / update / delete from / truncate) that is not `themis.`-
 //                       qualified. Unqualified names land in the search_path, i.e. in `public`.
@@ -101,6 +104,99 @@ export function stripComments(sql) {
   return out.join('')
 }
 
+/**
+ * Blank (with spaces, offsets and newlines kept) every place where text is DATA rather than code:
+ * single-quoted literals (plain and E'…') and dollar-quoted strings NESTED inside a dollar-quoted
+ * body (`$q$…$q$` inside `as $$ … $$`, i.e. the strings a PL/pgSQL body builds for `execute`).
+ * The outermost dollar quote is kept, because that is a function or DO body: code. Double-quoted
+ * identifiers are kept. Run it on comment-stripped text. Only the auth.users read allowance uses
+ * it: a READ counts only when it is written as code, never when it is text that dynamic SQL runs.
+ * @param {string} code
+ * @returns {string}
+ */
+export function maskLiterals(code) {
+  const out = code.split('')
+  const blank = (/** @type {number} */ from, /** @type {number} */ to) => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' '
+  }
+  const DOLLAR = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y
+  /** @param {number} at @returns {string | null} */
+  const dollarTagAt = (at) => {
+    if (code[at] !== '$' || /[\w$]/.test(code[at - 1] ?? '')) return null
+    DOLLAR.lastIndex = at
+    const m = DOLLAR.exec(code)
+    return m ? m[0] : null
+  }
+  /** @type {string | null} the tag of the enclosing (outermost) dollar-quoted body */
+  let body = null
+  let i = 0
+  const n = code.length
+  while (i < n) {
+    const c = code[i]
+    const tag = c === '$' ? dollarTagAt(i) : null
+    if (c === "'") {
+      const escapes = i > 0 && /[eE]/.test(code[i - 1]) && !/[\w$]/.test(code[i - 2] ?? '')
+      let j = i + 1
+      while (j < n) {
+        if (escapes && code[j] === '\\') j += 2
+        else if (code[j] === "'" && code[j + 1] === "'") j += 2
+        else if (code[j] === "'") break
+        else j++
+      }
+      blank(i, Math.min(j + 1, n))
+      i = j + 1
+    } else if (c === '"') {
+      let j = i + 1
+      while (j < n && !(code[j] === '"' && code[j + 1] !== '"')) j += code[j] === '"' ? 2 : 1
+      i = j + 1
+    } else if (tag !== null) {
+      if (body === null) {
+        body = tag // open the outer body: its contents are code
+        i += tag.length
+      } else if (tag === body) {
+        body = null // close the outer body
+        i += tag.length
+      } else {
+        // a string nested in the body: blank it through its closing tag
+        const close = code.indexOf(tag, i + tag.length)
+        const end = close < 0 ? n : close + tag.length
+        blank(i, end)
+        i = end
+      }
+    } else i++
+  }
+  return out.join('')
+}
+
+/**
+ * The ONE auth.users use besides `references auth.users`: a READ (`from auth.users` /
+ * `join auth.users`), written as code. Not when the keyword is `delete from`; not in a string
+ * (dynamic SQL); not with a row lock (`for update` / `for share` later in the same statement, which
+ * would block Hephaestus's writes to that user); not in a statement that creates a view or a table
+ * from the rows, nor in a COPY (that would publish or export Hephaestus's user table). `using auth.users`, a comma
+ * join and every other form stay forbidden. DECISIONS.md "P1.3 allow-list extension" (2026-09-29).
+ * @param {string} masked  maskLiterals(stripComments(sql))
+ * @param {number} index   where the `auth.users` reference starts
+ * @param {number} length  length of the matched reference
+ * @returns {boolean}
+ */
+function isAuthUsersRead(masked, index, length) {
+  // Still visible after masking = code, not text inside a literal.
+  if (!/^"?auth"?\s*\.\s*"?users"?$/i.test(masked.slice(index, index + length))) return false
+  const before = masked.slice(0, index)
+  // `from`/`join` must be a whole keyword that starts after whitespace or `(` (so `$q$from` and
+  // `'…'from` do not count), and `from` must not be the `delete from` form.
+  if (!/(?:^|[\s(])(?:join|(?<!\bdelete\s+)from)\s*$/i.test(before)) return false
+  const head = masked.slice(before.lastIndexOf(';') + 1, index)
+  const copiesRows =
+    /^\s*(?:copy\b|create\s+(?:or\s+replace\s+)?(?:(?:temp|temporary|unlogged)\s+)?(?:materialized\s+)?(?:recursive\s+)?(?:view|table)\b)/i
+  if (copiesRows.test(head)) return false
+  const stmtEnd = masked.indexOf(';', index)
+  const tail = masked.slice(index + length, stmtEnd < 0 ? masked.length : stmtEnd)
+  if (/\bfor\s+(?:no\s+key\s+update|update|key\s+share|share)\b/i.test(tail)) return false
+  return true
+}
+
 /** @param {string} s  @param {number} index */
 const lineAt = (s, index) => s.slice(0, index).split('\n').length
 
@@ -117,6 +213,7 @@ export function checkMigrationSql(file, sql) {
   /** @type {Violation[]} */
   const v = []
   const code = stripComments(sql)
+  const masked = maskLiterals(code)
   const add = (
     /** @type {number} */ index,
     /** @type {string} */ rule,
@@ -139,11 +236,15 @@ export function checkMigrationSql(file, sql) {
     const before = code.slice(0, m.index)
     if (schema === 'auth' && obj === 'uid' && /^\s*\(\s*\)/.test(after)) continue
     if (schema === 'auth' && obj === 'users' && /\breferences\s*$/i.test(before)) continue
+    if (schema === 'auth' && obj === 'users' && isAuthUsersRead(masked, m.index, m[0].length))
+      continue
     add(
       m.index,
       'forbidden-schema',
       `reference to ${schema}.${obj} — Themis may touch schema themis only (ADR-0002)` +
-        (schema === 'auth' ? '; allowed: `references auth.users`, `auth.uid()`' : ''),
+        (schema === 'auth'
+          ? '; allowed: `references auth.users`, `auth.uid()`, a read `from`/`join auth.users`'
+          : ''),
     )
   }
 

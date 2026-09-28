@@ -15,6 +15,7 @@ import {
   checkMigrationSql,
   checkMigrationsDir,
   formatViolation,
+  maskLiterals,
   runGuard,
   stripComments,
 } from './check-migrations.mjs'
@@ -127,7 +128,7 @@ describe('the two allowed auth forms', () => {
   })
 
   it('does not stretch the allow-list to other auth references', () => {
-    // auth.users read outside `references`, auth.uid without a call, and another auth function.
+    // a view publishing auth.users (not a plain read), auth.uid without a call, another auth function.
     const text = sql(
       'create view themis.v as select id from auth.users;',
       'create policy p on themis.t using (auth.jwt() is not null);',
@@ -138,6 +139,186 @@ describe('the two allowed auth forms', () => {
       { rule: 'forbidden-schema', line: 2 },
       { rule: 'forbidden-schema', line: 3 },
     ])
+  })
+})
+
+// B4 (2026-09-29): the P1.3 allow-list gains ONE form, a READ of auth.users written as code
+// (`from auth.users` / `join auth.users`), so P2.6's accept_invite can compare the caller's email.
+// Every write, lock, publish, string-built or other-table form must stay RED. Each RED case below
+// was an attempt to fool the allowance; the line asserted is the auth.users reference.
+describe('auth.users READ allowance (B4)', () => {
+  const RED = (line: number) => [{ rule: 'forbidden-schema', line }]
+
+  it.each([
+    ['select … from', 'select email from auth.users where id = auth.uid();'],
+    [
+      'upper case, newline before the name',
+      'SELECT email FROM\n  auth.users WHERE id = auth.uid();',
+    ],
+    ['join', 'select m.user_id from themis.memberships m join auth.users u on u.id = m.user_id;'],
+    ['left join, quoted', 'select 1 from themis.memberships m left join "auth"."users" u on true;'],
+    [
+      'exists subquery',
+      'select 1 where exists (select 1 from auth.users u where u.id = auth.uid());',
+    ],
+    ['a comment between from and the name', 'select 1 from /* the caller */ auth.users;'],
+    [
+      'update themis … from auth.users (writes themis, reads auth)',
+      'update themis.invites i set email = lower(u.email) from auth.users u where u.id = i.created_by;',
+    ],
+  ])('GREEN: %s', (_label, text) => {
+    expect(hits(text)).toEqual([])
+  })
+
+  it('GREEN: select … into … from auth.users in a PL/pgSQL body (the P2.6 shape)', () => {
+    const text = sql(
+      'create or replace function themis.f() returns text',
+      "language plpgsql security definer set search_path = '' as $fn$",
+      'declare my_email text; confirmed timestamptz;',
+      'begin',
+      '  select pg_catalog.lower(u.email), u.email_confirmed_at',
+      '    into my_email, confirmed',
+      '    from auth.users u',
+      '   where u.id = auth.uid();',
+      '  return my_email;',
+      'end $fn$;',
+    )
+    expect(hits(text)).toEqual([])
+  })
+
+  it('GREEN: a SQL-language body', () => {
+    const text = sql(
+      'create or replace function themis.me() returns text language sql stable',
+      "set search_path = ''",
+      'as $f$ select email from auth.users where id = auth.uid() $f$;',
+    )
+    expect(hits(text)).toEqual([])
+  })
+
+  it('pre-existing: a body on the SAME line as `set search_path` trips the search_path rule', () => {
+    // The search_path rule reads to the end of the line, so it sees `auth` in the body. Not a
+    // B4 regression (the rule predates it); keep `set search_path` on its own line.
+    const text = sql(
+      'create or replace function themis.me() returns text language sql stable',
+      "set search_path = '' as $f$ select email from auth.users where id = auth.uid() $f$;",
+    )
+    expect(hits(text)).toEqual(RED(2))
+  })
+
+  it.each([
+    ['delete from', 'delete from auth.users where id = auth.uid();', 1],
+    ['DELETE FROM across a newline', 'DELETE\n  FROM auth.users;', 2],
+    ['delete with a comment before from', 'delete /* x */ from auth.users;', 1],
+    ['delete from only', 'delete from only auth.users;', 1],
+    ['delete from, quoted', 'delete from "auth"."users";', 1],
+    [
+      'delete in a CTE',
+      'with d as (delete from auth.users where id = auth.uid() returning id) select * from d;',
+      1,
+    ],
+    [
+      'delete … using auth.users (only `from`/`join` count)',
+      'delete from themis.invites i using auth.users u where u.id = i.created_by;',
+      1,
+    ],
+    ['update', "update auth.users set email = 'x' where id = auth.uid();", 1],
+    [
+      'update with alias … from',
+      'update auth.users u set email = i.email from themis.invites i;',
+      1,
+    ],
+    ['insert … select', 'insert into auth.users (id) select created_by from themis.invites;', 1],
+    [
+      'merge into',
+      'merge into auth.users u using themis.invites i on u.id = i.created_by when matched then delete;',
+      1,
+    ],
+    ['alter table', 'alter table auth.users add column themis_flag boolean;', 1],
+    ['truncate', 'truncate auth.users;', 1],
+    ['truncate table', 'truncate table auth.users;', 1],
+    ['lock table', 'lock table auth.users in exclusive mode;', 1],
+    ['grant', 'grant select on auth.users to authenticated;', 1],
+    ['comma join', 'select 1 from themis.invites i, auth.users u;', 1],
+    ['select … for update', 'select email from auth.users where id = auth.uid() for update;', 1],
+    ['select … for share', 'select email from auth.users u for share of u;', 1],
+    ['select … for no key update', 'select 1 from auth.users for no key update;', 1],
+    ['create table … as', 'create table themis.t as select id, email from auth.users;', 1],
+    [
+      'create materialized view',
+      'create materialized view themis.mv as select email from auth.users;',
+      1,
+    ],
+    [
+      'create or replace view',
+      'create or replace view themis.v as\n  select email from auth.users;',
+      2,
+    ],
+    ['copy', 'copy (select email from auth.users) to stdout;', 1],
+    ['another auth table', 'select * from auth.identities;', 1],
+    ['auth.sessions via join', 'select 1 from themis.invites i join auth.sessions s on true;', 1],
+  ])('RED: %s', (_label, text, line) => {
+    expect(hits(text)).toEqual(RED(line))
+  })
+
+  it('RED: a write inside a PL/pgSQL body (the prove-red sabotage shape)', () => {
+    const text = sql(
+      'create or replace function themis.f() returns void',
+      "language plpgsql security definer set search_path = '' as $fn$",
+      'begin',
+      "  update auth.users set email = 'x' where id = auth.uid();",
+      'end $fn$;',
+    )
+    expect(hits(text)).toEqual(RED(4))
+  })
+
+  it('RED: a read that is TEXT for dynamic SQL, however it is spliced', () => {
+    const text = sql(
+      "do $do$ declare q text := '';",
+      'begin',
+      "  execute 'select email from auth.users';", // 3: single-quoted
+      "  execute 'delete ' || 'from auth.users';", // 4: `delete` split from `from`
+      "  execute 'delete '||' from auth.users';", // 5: split, with the space inside
+      '  execute $q$delete $q$ || $q$ from auth.users $q$;', // 6: nested dollar quotes
+      '  q := $q$ from auth.users $q$;', // 7: built across statements
+      "  q := E'delete \\' from auth.users';", // 8: an E'' string with an escaped quote
+      'end $do$;',
+    )
+    expect(hits(text)).toEqual([3, 4, 5, 6, 7, 8].flatMap(RED))
+  })
+
+  it('RED: `from` glued to a closing quote does not count as the keyword', () => {
+    // A top-level dollar quote is treated as a body (code), so the keyword test must stop it.
+    expect(hits('select $q$delete $q$from auth.users;')).toEqual(RED(1))
+  })
+
+  it('KNOWN BLIND SPOT (pre-existing, BRAIN.md §5): a target built by format() is not seen', () => {
+    // Not a reference to auth.users at all, so neither the old nor the new rule can see it. The
+    // guard reads text; the post-apply db:gate checks catch DDL built this way, but NOT a DML
+    // statement in a function body that never runs during the gate. Review is the control here.
+    const text = sql(
+      'do $do$ begin',
+      "  execute format('delete from %I.%I', 'au' || 'th', 'users');",
+      'end $do$;',
+    )
+    expect(hits(text)).toEqual([])
+  })
+})
+
+describe('maskLiterals', () => {
+  it('blanks single-quoted and nested dollar strings, keeps bodies and identifiers', () => {
+    const src = sql(
+      'create function themis.f() returns int language plpgsql as $fn$',
+      "begin perform 'a.b'; execute $q$x.y$q$; return 1; end $fn$;",
+      'select "auth".users;',
+    )
+    const out = maskLiterals(src)
+    expect(out).toHaveLength(src.length)
+    expect(out.split('\n')).toHaveLength(3)
+    expect(out).not.toContain('a.b')
+    expect(out).not.toContain('x.y')
+    expect(out).toContain('$fn$')
+    expect(out).toContain('return 1; end $fn$;')
+    expect(out).toContain('"auth".users')
   })
 })
 
