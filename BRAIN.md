@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P2.1 secret boundary: lint rule + `check:bundle`; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P2.2 Supabase client + local-only fallback; P2.1 tests recorded; CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -36,6 +36,13 @@ call".
     (`empty | incomplete | close (<5 pts) | clear`).
   - `src/App.tsx` — the single-page UI: frame → weigh → score → recommendation panel; the
     "AI analyst" card is explicitly marked roadmap.
+  - `src/lib/env.ts` (P2.2) — the ONLY reader of `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` (each read by its full
+    literal name). Pure `resolveAppEnv(raw)` never throws: `configured` only when both are non-blank and the URL is
+    absolute http(s); else `local` with reason `missing-url|missing-anon-key|invalid-url`. Exports `appEnv`, `isLocalOnly`.
+  - `src/lib/supabase.ts` (P2.2) — `THEMIS_CLIENT_OPTIONS` (`db.schema = 'themis'`, auth persistSession +
+    detectSessionInUrl + `flowType: 'pkce'`), `createThemisClient`, `clientFor(env)` and `supabase: ThemisClient | null`.
+    **null = local-only mode** (no createClient call, no request, the P0 matrix). Every consumer must handle null.
+    Not imported by the UI yet (P2.10 wires it), so today it is tree-shaken out of `dist/`.
 - **Database (ADR-0002, P1 in progress, nothing applied live yet):** Hephaestus's LIVE Supabase
   project `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1), schema **`themis` only**. Never
   `supabase db push`/`link`/`db reset`/`migration *` (Hephaestus owns
@@ -156,8 +163,9 @@ projectRef, summary, sections}`, and `sections` = schemas, relations, constraint
   **Hephaestus's `npm test` is static** (its `rls-isolation.test.ts` reads migration FILES), so it cannot see the live
   DB. Its `e2e/tenant-isolation.spec.ts` WRITES (it signs up users) into whatever project `.env` names. Live
   regression = the diffs + `deploy-smoke` with `DEPLOY_URL` + Data API probes + an operator sign-in.
-- **External services / keys:** none wired yet. `.env.example` reserves `VITE_SUPABASE_URL`,
-  `VITE_SUPABASE_ANON_KEY` (unset, unused).
+- **External services / keys:** none wired yet. `@supabase/supabase-js` ^2.117.2 is a dependency (P2.2); the client
+  exists only when `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` are both set at build. CI and the live site set
+  neither, so they run local-only. Setting them is premature until P1.14 creates the live `themis` schema and it is exposed.
 - **How to run / build / test / deploy:** `npm run dev` · `npm test` · `npm run lint && npm run
 typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/deploy.yml`
   (verify job, then `actions/deploy-pages`). Pages source is "GitHub Actions".
@@ -204,7 +212,13 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   or live service). This is the secret boundary. `eslint.config.js` errors when `src/**` reads a server-only name (bare
   or `THEMIS_`) or a `VITE_*` name outside the constraint-6 allow-list. `npm run check:bundle`
   (`scripts/check-bundle-secrets.mjs`) scans the built `dist/`, and CI runs it right after `build`. Both were proven
-  RED (BUILD_LOG P2.1). Test-writer coverage for P2.1 is still to come.
+  RED (BUILD_LOG P2.1). P2.1 tests done (commit `f5a6e27`): `scripts/check-bundle-secrets.test.ts` (42) and
+  `scripts/eslint-secret-boundary.test.ts` (74, the real `eslint.config.js` through the ESLint API), 116 tests. The suite
+  is **667**, and 3 mutations went RED (BUILD_LOG).
+  P2.2 done (builder; committed locally, NOT pushed): `@supabase/supabase-js` + `src/lib/env.ts` + `src/lib/supabase.ts`
+  (§2) + `.env.example`. The app is unchanged: with no env it runs local-only, and the built bundle is byte-identical to
+  before (supabase.ts is not imported yet). `check:bundle` stays green without any exception. Test-writer
+  `src/lib/env.test.ts` is still to come.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -320,16 +334,49 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   MetaProperty is two levels down (`import.meta.env.X` = Member(Member(MetaProperty, env), X)). Only its
   `process.env` twin works. Themis uses `[object.object.type='MetaProperty'][object.property.name='env']`. Found at
   P2.1 (2026-09-28) with the ESLint Linter API. An ESLint rule nobody has seen fail is not a rule.
-- **`check:bundle` greps the literal `service_role` across ALL of `dist/`, dependencies included.** When P2.2 adds
-  `@supabase/supabase-js`, check that the library does not ship that string. If it does, narrow the rule to a
-  reviewed allow-list of locations. Never delete the rule. It also scans whatever `dist/` holds, so a stale build
-  gives a stale answer: always run it right after `npm run build`.
+- **`check:bundle` greps the literal `service_role` across ALL of `dist/`, dependencies included.** Checked at P2.2:
+  supabase-js 2.117.2 has it only in JSDoc (auth-js `GoTrueAdminApi` 17×, storage-js 4×), and the build strips
+  comments. A minified probe of the client has 0 hits, so no exception exists. Re-check after a supabase-js upgrade,
+  and after P2.10's first real import. If it ever ships in code, add a narrow exception keyed to that exact occurrence,
+  with a test. Never delete or widen the rule. It also scans whatever `dist/` holds, so a stale build gives a stale
+  answer: always run it right after `npm run build`.
+- **Never pass `import.meta.env` around as a whole object in `src/`.** Vite replaces a bare `import.meta.env` with an
+  object of EVERY `VITE_*` var set at build time, so a disallowed name would reach the bundle without any
+  `import.meta.env.X` read for the lint rule to catch. Read each allowed name literally, as `src/lib/env.ts` does. P2.2.
+- **supabase-js's `createClient` throws at call time on an empty or invalid URL.** Calling it at module top level with
+  unset env would crash the whole page at import. `src/lib/supabase.ts` creates no client in local-only mode. P2.2.
 - **The gh token on this desktop has no `workflow` scope** (`gist, read:org, repo`). A push that
   adds or edits `.github/workflows/*` is rejected outright.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P2.2) — Supabase client and local-only fallback
+
+- Did: installed `@supabase/supabase-js` ^2.117.2 (npm). NEW `src/lib/env.ts` and `src/lib/supabase.ts` (§2);
+  `.env.example` documents local-only mode (names only). The client is pinned to `db.schema = 'themis'` with PKCE,
+  persistSession and detectSessionInUrl. With either name missing (or a malformed URL), `supabase` is null and the app is
+  the unchanged P0 matrix. A scratch probe build was exercised in node: local → imports OK and `supabase = null`;
+  configured (fake URL) → `from()`/`rpc()` schema = `themis` and flowType pkce, no request sent. The full chain is green
+  (667 tests, db:check, db:gate, build, check:bundle). The bundle delta is 0 (tree-shaken until P2.10 imports it; the
+  probe estimates +215 kB raw, +55 kB gzip then). No live call, and nothing pushed.
+- Decided (DECISIONS.md P2.2): no client rather than a stub; an invalid URL means local mode; the names are read
+  literally; no bundle-scan exception, because supabase-js has `service_role` only in comments, which the build strips.
+- Resolved: the §5 `service_role` watch item (checked; no hit).
+- Found: §5 (whole-`import.meta.env` inlining; createClient throws on a bad URL).
+- Left off: test-writer writes `src/lib/env.test.ts` for P2.2. Then P2.3 (routing). P2.10 must re-run `check:bundle`
+  once supabase.ts is actually imported, and should consider a lazy `import()` so local-only visitors do not download it.
+
+### 2026-09-28 (P2.1 tests) — permanent coverage for the secret boundary
+
+- Did (commit `f5a6e27`): `scripts/check-bundle-secrets.test.ts` (42: each prefix, `service_role`, a decoded service-role
+  JWT, each server-only name, non-findings, `scanDir` on temp dirs, the CLI's real exit codes 0/1/2) and
+  `scripts/eslint-secret-boundary.test.ts` (74: the real `eslint.config.js` via the ESLint API. All 8 names error in 6
+  forms in `src/` and are clean in `scripts/`, `e2e/` and `supabase/functions/`. The VITE allow-list is covered, and an
+  explicit argus-news regression test). 116 tests; suite 551 → **667**. Three mutations each went RED (the argus
+  selector gave 26 failed, `files: **/*` gave 4, and removing the lookbehind gave 1). The full chain is green.
+- Left off: P2.2 / P2.3.
 
 ### 2026-09-28 (P2.1) — secret boundary: lint rule and bundle scan
 
@@ -632,6 +679,7 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   rows OWNED by `themis`, with FK triggers attributed to their constraint's schema and the pgrst.db_schemas list split
   per schema. It stores definitions as md5 only (DECISIONS.md P1.12).
 - **2026-09-28:** the live apply exposes `themis` only AFTER the apply and a clean `pre → post` diff, appends it LAST to `db_schema`, and re-diffs after exposing; a live session uses ONE transport (a PAT with the scripts, or the connector's `execute_sql` only, never `apply_migration`) (DECISIONS.md P1.13).
+- **2026-09-28:** no Supabase config = NO client (`supabase` is null, local-only P0 matrix), never a stub, never a throw; the client is pinned to schema `themis`; env names are read literally (DECISIONS.md P2.2).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

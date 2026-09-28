@@ -963,3 +963,47 @@ npm run build && npm run check:bundle` → all pass (10 files, 593,703 bytes sca
 `module.exports = process.env.X`.
 
 **Next:** P2.2 / P2.3.
+
+
+## 2026-09-28 — P2.2 (builder): Supabase client and local-only fallback
+
+**Files:** `package.json` + `package-lock.json` (dep `@supabase/supabase-js` ^2.117.2, via `npm install`), NEW
+`src/lib/env.ts`, NEW `src/lib/supabase.ts`, `.env.example`. No migration, no tenant data, and nothing else in `src/`
+changed. `App.tsx` and `main.tsx` are untouched, so the P0 matrix is literally the same code.
+
+- `src/lib/env.ts`: `resolveAppEnv(raw)` is pure and never throws. It returns `{ mode: 'configured', supabase: { url,
+  anonKey } }` only when BOTH `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are non-blank and the URL is an absolute
+  http(s) URL. Otherwise it returns `{ mode: 'local', reason: 'missing-url' | 'missing-anon-key' | 'invalid-url' }`.
+  `appEnv` and `isLocalOnly` are resolved once, from the two names read by their full literal names. It never passes
+  `import.meta.env` as a whole object, because Vite would then inline every `VITE_*` var into the bundle. A
+  `declare global` types the two names as `string | undefined` instead of Vite's `any`.
+- `src/lib/supabase.ts`: `THEMIS_CLIENT_OPTIONS = { db: { schema: 'themis' }, auth: { persistSession: true,
+  detectSessionInUrl: true, flowType: 'pkce' } }`, `createThemisClient(config)`, `clientFor(env)` (null in local mode)
+  and `supabase` (`ThemisClient | null`). In local-only mode createClient is never called, so there is no throw
+  (createClient throws on an empty URL) and no request.
+- `.env.example`: names only. It now documents that both unset = local-only mode and that the value is the ANON key.
+
+**Exercised (a scratch probe, not committed, in the session scratchpad):** Vite built `src/lib/supabase.ts` as an ES lib
+twice. (a) With no env, `node` imports it OK and `supabase = null (local-only)`. (b) With
+`VITE_SUPABASE_URL=https://example.invalid` and a fake anon key, it imports OK. It gives `from('decisions')` schema =
+`themis` and `rpc('x')` schema = `themis`, rest URL `https://example.invalid/rest/v1/...`, `auth.flowType = pkce`, and
+persistSession and detectSessionInUrl true. No request was sent (a query builder was never awaited).
+
+**`service_role` in supabase-js (the BRAIN §5 watch item): no hit, and no exception added.** The literal appears in
+`@supabase/auth-js` `GoTrueAdminApi` (17×) and `@supabase/storage-js` (4×), ONLY inside JSDoc comments ("Never expose
+your `service_role` key in the browser"). The build strips comments. A minified app-mode probe build of the client
+(214.97 kB, 55.30 kB gzip) has **0** occurrences, and `check:bundle` on it, on the local probe and on the configured probe
+exits **0**. The scan is unchanged.
+
+**Bundle-size delta: 0 bytes today.** Nothing imports `supabase.ts` yet (P2.10 wires the UI), so Rollup tree-shakes it.
+The build emits the byte-identical `dist/assets/index-DhFmrpjC.js` (234.29 kB, 73.46 kB gzip) as before the install.
+Expect roughly +215 kB raw and +55 kB gzip when P2.10 imports it (from the probe; the shared runtime makes the real number
+a little lower).
+
+**Green:** `npm run lint && npm run typecheck && npm test` (667) `&& npm run db:check && npm run db:gate && npm run build
+&& npm run check:bundle` → all pass (10 files, 593,703 bytes scanned). No live Supabase call, and not pushed.
+
+**Next:** test-writer writes `src/lib/env.test.ts` (missing → local for each reason, present → configured; a
+`supabase.ts` test can use `vi.stubEnv` plus `vi.resetModules` to assert `supabase === null` with no env). Then P2.3.
+For P2.10: re-run `check:bundle` after the first real import. If a future supabase-js ever ships `service_role` outside a
+comment, add a narrow exception keyed to that exact occurrence, with a test. Never widen the rule.

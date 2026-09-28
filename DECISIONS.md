@@ -337,3 +337,18 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   restricted keys, Supabase secret keys and Supabase PATs), and the server-only env NAMES, beyond the PLAN's list.
 - **Nothing to scan is a failure (exit 2), not a pass.** `check:bundle` does not build. It scans whatever `dist/`
   holds, so CI runs it right after `build` and before the artifact upload.
+
+## 2026-09-28 — P2.2: no client without config; two names read literally; no bundle-scan exception
+
+- **Local-only mode means NO client, not a dummy client.** `supabase` is `ThemisClient | null`, and createClient is
+  called only when both names are present and the URL is an absolute http(s) URL. Every consumer must branch on null
+  (or on `isLocalOnly`). A stub client would make "not configured" look like "the backend is failing".
+- **A malformed URL is local-only mode too (`invalid-url`), not a crash.** createClient throws on it at import time,
+  which would blank the whole P0 site because of one bad CI variable.
+- **The two names are read by their full literal names, never via `import.meta.env` as a whole.** Vite replaces a
+  bare `import.meta.env` with an object of EVERY `VITE_*` var present at build, which would leak names outside the
+  constraint-6 allow-list past the lint rule.
+- **No `check:bundle` exception was added.** supabase-js 2.117.2 contains `service_role` only in JSDoc comments
+  (auth-js GoTrueAdminApi, storage-js), and the build strips them. A minified probe of the client has 0 hits. The rule
+  stays global. If a future version ships the literal in code, the fix is a narrow exception keyed to that exact
+  occurrence, with a test, never a wider rule.
