@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-28 (P1.9 db:gate:prove-red) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-28 (P1.10 CI runs the db gates) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -147,8 +147,11 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
   (local only, not pushed). P1.8 done: `db:gate` now runs the structural sweep, the leak-matrix coverage check, the orphan
   scan and the A/B leak matrix (290 PASS), sharing `scripts/db-gate/leak-matrix.mjs` with the Vitest suite (still 432
   tests). Every new check was proven RED on a mutated archive copy. OPEN: the bootstrap's default-privileges revoke is a
-  no-op (§5, BUILD_LOG P1.8), and the builder must decide the fix. `db:gate:prove-red` and `db:apply` arrive in
-  P1.9/P1.11. Next: that decision, then P1.9.
+  no-op (§5, BUILD_LOG P1.8). That was decided as B2: per-function revokes, enforced by `db:gate`. P1.9 done:
+  `npm run db:gate:prove-red` proves the gate RED on 34 sabotages. P1.10 done locally (committed, NOT pushed): the CI
+  `verify` job runs `db:check`, `db:gate` and `db:gate:prove-red` (4 jobs) after `npm test` and before `build`, so a
+  red gate blocks the Pages deploy. The lead pushes it; the push needs the gh `workflow` scope (§5). A green PR run is
+  still to be observed. `db:apply` arrives in P1.11.
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -236,6 +239,21 @@ typecheck` · `npm run build`. Deploy = push to `main` → `.github/workflows/de
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-28 (P1.10) — CI runs the db gates
+
+- Did: `.github/workflows/deploy.yml` only. The `verify` job now runs, in this order: lint, typecheck, `npm test`,
+  `npm run db:check`, `npm run db:gate` (5 min timeout), `npm run db:gate:prove-red` (`PROVE_RED_JOBS=4`, 10 min
+  timeout), and then build and the Pages artifact. The job has a 20 min timeout and is renamed "Lint + typecheck + tests
+  - db gates + build" (main has no branch protection or rulesets, so no required check names it). `deploy` still
+    `needs: verify`, so a red gate means no deploy. There is no secret and no live-Supabase step, because the gates run
+    on PGlite. The YAML passes yaml-lint and parses with the step order shown above.
+- Expected CI time: the three gate steps add about 2–3 min (desktop, 4 jobs: prove-red 53 s, db:gate 15 s, db:check
+  1 s; a 4-vCPU runner is slower). Local chain green: 432 tests, the guard passes 6 files, GATE PASSED, prove-red 34/34
+  plus the control.
+- Decided: 4 prove-red jobs, because the runner has 4 vCPUs (DECISIONS.md P1.10).
+- Left off: the lead pushes the commit (this needs the gh `workflow` scope, §5) and watches the real run. Then comes
+  P1.11 ∥ P1.12.
 
 ### 2026-09-28 (P1.9) — `npm run db:gate:prove-red`: the gate is proven RED
 

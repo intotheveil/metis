@@ -11,8 +11,9 @@ permissions:
 
 jobs:
   verify:
-    name: Lint + typecheck + tests + build
+    name: Lint + typecheck + tests + db gates + build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +24,21 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # Database gates (PLAN P1.10). Local PGlite only: no secret, no live Supabase. A red gate fails
+      # `verify`, and `deploy` needs `verify`, so a red gate blocks the Pages deploy.
+      - name: Migration guard (db:check)
+        run: npm run db:check
+      - name: Database gate (db:gate)
+        run: npm run db:gate
+        timeout-minutes: 5
+      # A gate nobody has seen fail is not a gate: every sabotage must turn db:gate RED.
+      # Public-repo ubuntu-latest has 4 vCPUs, so 4 parallel gate runs (about 1.5-2 min expected;
+      # 52 s at 4 jobs on the desktop).
+      - name: Prove the gate RED (db:gate:prove-red)
+        run: npm run db:gate:prove-red
+        env:
+          PROVE_RED_JOBS: '4'
+        timeout-minutes: 10
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'

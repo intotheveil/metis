@@ -242,3 +242,11 @@ The bootstrap statement `alter default privileges in schema themis revoke execut
   The P1.8 "archive without the P1.7 files" mutation became `drop table if exists themis.ai_runs cascade` (the same
   stale-entry line) so that every sabotage is an append.
 - **Parallel by default (`min(8, cores)`)**: 35 gate runs take about 40 s instead of about 7 minutes serially.
+
+## 2026-09-28 — P1.10: CI runs prove-red with 4 jobs; db:check runs as its own step
+
+- **`PROVE_RED_JOBS=4` in CI.** A public-repo `ubuntu-latest` runner has 4 vCPUs. With the script default,
+  `min(8, cores)`, CI would also get 4, but the explicit value keeps the CI cost from changing if the runner size changes.
+  At 4 jobs the run takes 53 s on the desktop; about 1.5–2 min is expected on the runner. There is a 10 min step timeout.
+- **`db:check` is its own step** even though `db:gate` runs the guard first. A guard failure then shows up as its own
+  red step in the PR, apart from a gate failure, and it costs about 1 s.

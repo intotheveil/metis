@@ -605,3 +605,23 @@ audit actor keeps the audit row, actor nulled')`: the assertion is intact, and t
 - Next: test-writer (if any: the script is its own proof), then P1.10 (CI runs `db:check`, `db:gate` and
   `db:gate:prove-red`), ∥ P1.11, P1.12. **A new gate check should come with a new `SABOTAGES` entry** that proves it
   red.
+
+## 2026-09-28 — P1.10 CI runs the gates
+
+- Did: edited only `.github/workflows/deploy.yml`. After `npm test` and before `npm run build`, the `verify` job runs three
+  named steps: `Migration guard (db:check)`, then `Database gate (db:gate)` (timeout 5 min), then `Prove the gate RED
+  (db:gate:prove-red)` (env `PROVE_RED_JOBS: '4'`, timeout 10 min). The job has `timeout-minutes: 20` and its name is
+  now "Lint + typecheck + tests + db gates + build". Checked first: `main` has no branch protection and no rulesets, so
+  no required check depends on the old name. `deploy` keeps `needs: verify`, so a red gate step fails `verify` and blocks
+  the Pages deploy. No secret and no live-Supabase step (PGlite only).
+- YAML: `npx --yes yaml-lint` → "YAML Lint successful". A parse with the `yaml` package shows the verify steps in order
+  checkout, setup-node, npm ci, lint, typecheck, npm test, db:check, db:gate, prove-red, build, upload-pages-artifact.
+  It also shows `deploy.needs = verify`.
+- Timing (desktop, 4 jobs, the same as CI): db:check 1 s, db:gate 15 s, prove-red wall 52.5–53.1 s. On the 4-vCPU
+  public runner I expect about 2–3 min in total for the gate steps, and the whole verify job should take about 4–5 min.
+- Passed locally: `npm run lint && npm run typecheck && npm test && npm run db:check && npm run db:gate &&
+  PROVE_RED_JOBS=4 npm run db:gate:prove-red`, all green. 432 tests; guard 6 files; GATE PASSED; `PROVE-RED PASSED —
+  34/34 … control GREEN`.
+- NOT pushed. The lead pushes this commit (the push needs the gh `workflow` scope, BRAIN §5) and watches the real CI
+  run. The acceptance item "a PR run shows both steps green" can only be closed by that observed run.
+- Next: the lead's push and the observed CI run, then P1.11 ∥ P1.12.
