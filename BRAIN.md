@@ -466,6 +466,11 @@ $f$` on one line is RED (it sees `auth` after the `=`). Keep `set search_path = 
 
 ## 6. CHANGELOG (append-only — newest first)
 
+### 2026-09-29 (later still) — P1.14: units 1–6 of 7 LIVE; unit 7 refused
+
+- The operator chose "option 1". A read check and **apply-3, -4, -5 (the audit pair), -6** committed, so the ledger should hold 20260928200000 through 20260929000000 (6 versions). **apply-7 (`20260929010000_themis_invites.sql`: the create_invite / accept_invite / revoke_invite / set_member_role / remove_member RPCs) was refused** by the permission classifier. No allow rule for `mcp__plugin_supabase_supabase__execute_sql` exists yet; the earlier calls passed on the classifier's own judgment.
+- **Resume:** run `apply-7.sql` (operator paste in the SQL Editor, or add an allow rule), then the post-fingerprint (compare with `pre-fingerprint.json`), the themis-vs-PGlite comparison and the Hephaestus smoke. Then Data API exposure (operator, Dashboard).
+
 ### 2026-09-29 (later) — P1.14 PARTIAL: units 1–2 of 7 applied live, then refused
 
 - The operator re-instructed "make live". A fresh pre-fingerprint matched 2026-09-29 in every section. **apply-1** (schema, ledger, touch_updated_at) and **apply-2** (tenancy: profiles, workspaces, memberships, invites, helpers, RLS, grants) COMMITTED on `atopkqykdmrcfvvcistc`. **apply-3** (decisions) was then refused by the permission classifier (Modify Shared Resources), and a following read-only check was refused as well. From here, the connector is unusable without an operator permission rule.
