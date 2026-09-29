@@ -57,3 +57,11 @@ describe('brand assets', () => {
     expect(bust.getAttribute('src')).toBe(`${import.meta.env.BASE_URL}brand/themis-bust.webp`)
   })
 })
+
+describe('header', () => {
+  it('links to the sign-in page from the matrix', () => {
+    render(<App />)
+    const link = screen.getByRole('link', { name: 'Sign in' })
+    expect(link.getAttribute('href')).toBe(`${import.meta.env.BASE_URL}signin`)
+  })
+})

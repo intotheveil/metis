@@ -354,9 +354,18 @@ function Header() {
             THEMIS
           </span>
         </div>
-        <span className="rounded-full border border-accent/30 px-3 py-1 font-mono text-[11px] tracking-wider text-accent/80">
-          PREVIEW
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="hidden rounded-full border border-accent/30 px-3 py-1 font-mono text-[11px] tracking-wider text-accent/80 sm:inline">
+            PREVIEW
+          </span>
+          {/* A plain link (not a router Link): the matrix also renders outside a router in tests. */}
+          <a
+            href={`${import.meta.env.BASE_URL}signin`}
+            className="rounded-lg border border-accent/60 px-4 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-ink-950"
+          >
+            Sign in
+          </a>
+        </div>
       </div>
     </header>
   )
