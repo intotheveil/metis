@@ -2,6 +2,9 @@
 // a MemoryRouter, so a route removed, renamed or reordered in routes.tsx turns a test here RED.
 // The PKCE case matters most: /auth/callback must leave `?code=` in the location untouched, because
 // P2.10's Supabase client (detectSessionInUrl, flowType 'pkce') reads it from there.
+// Every render passes `authLoader={null}` = local-only mode, so a developer's .env with
+// VITE_SUPABASE_* can never make this file load supabase-js. Configured-mode behaviour (a fake auth
+// client) is covered in src/features/auth/auth.test.tsx.
 
 import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -21,7 +24,7 @@ function LocationProbe() {
 function renderAt(entry: string) {
   return render(
     <MemoryRouter initialEntries={[entry]}>
-      <AppRoutes />
+      <AppRoutes authLoader={null} />
       <LocationProbe />
     </MemoryRouter>,
   )
@@ -51,10 +54,14 @@ describe('route table: /', () => {
 })
 
 describe('route table: P2 shells', () => {
-  it('/signin renders the sign-in page, which says accounts are not live', () => {
+  it('/signin renders the sign-in page, which says honestly that sign-in is coming soon', () => {
     renderAt('/signin')
     expect(pageTitle()).toHaveTextContent('Sign in')
-    expect(screen.getByText(/Accounts are not live yet/)).toBeInTheDocument()
+    expect(screen.getByText('Coming soon')).toBeInTheDocument()
+    expect(screen.getByText(/Sign-in is not available yet/)).toBeInTheDocument()
+    // Local-only: no form that could only fail.
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
     // The shell links back to the matrix rather than stranding the visitor.
     expect(screen.getByRole('link', { name: 'Open the decision matrix' })).toHaveAttribute(
       'href',
@@ -62,9 +69,9 @@ describe('route table: P2 shells', () => {
     )
   })
 
-  it('/auth/callback renders the callback page', () => {
+  it('/auth/callback renders the callback page (local-only: sign-in unavailable)', () => {
     renderAt('/auth/callback')
-    expect(pageTitle()).toHaveTextContent('Signing you in')
+    expect(pageTitle()).toHaveTextContent('Sign-in unavailable')
   })
 
   it('/w/:workspaceId shows the workspace id', () => {
@@ -112,7 +119,7 @@ describe('route table: unknown paths', () => {
 describe('/auth/callback keeps the PKCE query intact', () => {
   it('?code=&state= survive the render untouched (no redirect, no strip)', () => {
     renderAt('/auth/callback?code=abc&state=x')
-    expect(pageTitle()).toHaveTextContent('Signing you in')
+    expect(pageTitle()).toHaveTextContent('Sign-in unavailable')
     expect(probedLocation()).toEqual({
       pathname: '/auth/callback',
       search: '?code=abc&state=x',
@@ -123,7 +130,7 @@ describe('/auth/callback keeps the PKCE query intact', () => {
   it('an error redirect keeps its encoded error_description byte for byte', () => {
     const search = '?error=access_denied&error_description=User%20cancelled%20%26%20left'
     renderAt(`/auth/callback${search}`)
-    expect(pageTitle()).toHaveTextContent('Signing you in')
+    expect(pageTitle()).toHaveTextContent('Sign-in unavailable')
     expect(probedLocation().search).toBe(search)
   })
 })
@@ -142,7 +149,7 @@ describe('basenameFrom', () => {
   it('the basename it produces lets a router under /themis match /themis/signin', () => {
     render(
       <MemoryRouter basename={basenameFrom('/themis/')} initialEntries={['/themis/signin']}>
-        <AppRoutes />
+        <AppRoutes authLoader={null} />
       </MemoryRouter>,
     )
     expect(pageTitle()).toHaveTextContent('Sign in')

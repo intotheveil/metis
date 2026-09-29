@@ -21,7 +21,8 @@ test('/auth/callback?code=… renders the callback page and keeps the query', as
   const response = await page.goto(`/auth/callback${query}`)
   expect(response?.status()).toBe(404)
 
-  await expect(page.getByRole('heading', { name: 'Signing you in' })).toBeVisible()
+  // Local-only build (no VITE_SUPABASE_*): the callback page says sign-in is unavailable (P2.10).
+  await expect(page.getByRole('heading', { name: 'Sign-in unavailable' })).toBeVisible()
   // The PKCE code must still be in the URL when P2.10's Supabase client reads it: no redirect,
   // no rewrite, no stripping, byte for byte.
   expect(new URL(page.url()).pathname).toBe('/auth/callback')

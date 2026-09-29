@@ -471,3 +471,29 @@ share` later in the same statement (a row lock on a shared row blocks Hephaestus
   definer body. The gate must stop at the guard on the UPDATE line, which proves the widening did not open writes.
 - **Shim: `auth.users.email_confirmed_at timestamptz default now()`.** Real Supabase has the column with no default;
   the shim's default keeps `seedFixture`'s users confirmed without editing the fixture. Unconfirmed-path tests set null.
+
+## 2026-09-29 — P2.10 auth UI: an AuthClient seam, supabase-js lazy per route, local-only says "coming soon"
+
+- **The UI talks to a small `AuthClient` interface (`src/features/auth/authClient.ts`), never to supabase-js.** The
+  real implementation (`supabaseAuthClient.ts`) is reached only through a dynamic `import()`, so Vite emits it with
+  supabase-js as a separate chunk (215.68 kB / 55.49 kB gzip). The entry grows only +12.7 kB / +3.3 kB gzip. Tests
+  drive every state with a fake client, and the adapter is tested separately against real supabase-js over a
+  stubbed fetch, so the fake cannot drift from the library unnoticed.
+- **The client loads on first `useSession()`, not at app start.** Only `/signin`, `/auth/callback` and `/w/*` call it,
+  so even in a configured build the matrix at `/` never downloads supabase-js. The cost: a signed-in user's session
+  is not read on `/` (nothing there needs it before P2.13). In local-only mode the loader is `null`: nothing is ever
+  downloaded or sent (proven by e2e: one script request per page).
+- **Local-only mode shows sign-in as "Coming soon", with no form.** A form that can only fail would look like a broken
+  product. The copy says the matrix works in full and nothing leaves the page.
+- **Google uses `skipBrowserRedirect: true` and the provider performs `window.location.assign(url)` itself** (an
+  injectable `redirect`), so the redirect is testable and a missing URL becomes a message, not a silent no-op.
+- **The callback page waits; it never exchanges the code itself.** supabase-js (`detectSessionInUrl`, PKCE) exchanges
+  `?code=` in `initialize()`, which is also where a failed exchange is reported. A code with no session and no error
+  means the PKCE verifier is not in this browser (the link was opened elsewhere); that gets its own message.
+- **Sign-out resets the provider's state itself** instead of trusting the SIGNED_OUT event, so a lost event cannot leave
+  a signed-out user looking signed in.
+- **No generated DB types yet (P2.9 has not run).** `rpc('bootstrap_me')` is untyped; the adapter checks
+  `typeof data === 'string'` and treats anything else as an error (never `/w/null`).
+- **No "Sign in" link in the matrix header.** The header is in `src/App.tsx`, which P2.10 does not own, and on the
+  local-only live site the link would only lead to "coming soon". It belongs with P2.13 (which owns App.tsx) once the
+  site is configured.

@@ -2,9 +2,10 @@ import type { RouteObject } from 'react-router-dom'
 import App from '../App'
 import { AuthCallbackRoute, InviteRoute, NotFoundRoute, SignInRoute, WorkspaceRoute } from './pages'
 
-// The route table (PLAN P2.3). `/` is the P0 decision matrix, unchanged. The other paths are shells
-// until P2.10–P2.12 fill them. Unknown paths render a not-found page inside the app: on GitHub
-// Pages every unknown URL is served dist/404.html (= index.html), so without the `*` route a typo
+// The route table (PLAN P2.3). `/` is the P0 decision matrix, unchanged. `/signin` and
+// `/auth/callback` are the P2.10 auth pages (AppRoutes wraps the table in the AuthProvider);
+// workspaces and invites stay shells until P2.11–P2.12. Unknown paths render a not-found page
+// inside the app: on GitHub Pages every unknown URL is served dist/404.html (= index.html), so without the `*` route a typo
 // would render an empty page.
 export const routes: RouteObject[] = [
   { path: '/', element: <App /> },

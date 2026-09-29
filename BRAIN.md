@@ -5,7 +5,7 @@
 > Seeded 2026-09-28 from the operator's intent at NEW PRODUCT time; genuine unknowns are
 > marked **❓ needs human input** rather than invented.
 
-**Last updated:** 2026-09-29 (P2.7: the P2.5/P2.6 RPCs are db:gate lines (395 PASS) and prove-red sabotages (55); CHECKPOINT P1-LIVE still open) by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
+**Last updated:** 2026-09-29 (P2.10: auth UI + session committed locally; the site stays local-only, sign-in shows "Coming soon") by Claude Code (Opus 5.5, Windows desktop, dispatched from zeus)
 **Status:** in-development
 **Repo:** `intotheveil/themis` (public) · local `D:\projects\themis` · **Deployed:** https://themis.adeonanalytics.com/ (GitHub Pages custom domain, CI deploys on every push to main; the old github.io/themis/ URL 301s here)
 
@@ -38,8 +38,10 @@ call".
     "AI analyst" card is explicitly marked roadmap. Since P2.3 it is the element of route `/`, unchanged.
   - **Routing (P2.3):** `react-router-dom` 7, declarative `BrowserRouter` (main.tsx) + `useRoutes` (`src/routes/AppRoutes.tsx`)
     over the `RouteObject[]` in `src/routes/routes.tsx`: `/` (App), `/signin`, `/auth/callback`, `/w/:workspaceId/*`,
-    `/invite/:token`, `*` (in-app not found). The non-`/` elements are honest shells in `src/routes/pages.tsx` that
-    P2.10–P2.12 replace. `basename = basenameFrom(import.meta.env.BASE_URL)`. **Pages SPA fallback:** the
+    `/invite/:token`, `*` (in-app not found). `src/routes/pages.tsx` holds the page elements in a shared `PageShell`
+    (bust icon + gold wordmark header); since P2.10 `/signin` and `/auth/callback` render the auth feature, `/w/*` and
+    `/invite/*` are still honest shells for P2.11–P2.12. `AppRoutes` wraps the table in `<AuthProvider>` (prop
+    `authLoader` = test seam). `basename = basenameFrom(import.meta.env.BASE_URL)`. **Pages SPA fallback:** the
     `spaFallback()` Vite plugin (`vite.config.ts`, build only) copies `dist/index.html` → `dist/404.html`, so Pages
     serves the app (with HTTP 404) for any deep link, the URL untouched, so a PKCE `?code=` survives. No redirect trick.
   - `src/lib/env.ts` (P2.2) — the ONLY reader of `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` (each read by its full
@@ -48,7 +50,20 @@ call".
   - `src/lib/supabase.ts` (P2.2) — `THEMIS_CLIENT_OPTIONS` (`db.schema = 'themis'`, auth persistSession +
     detectSessionInUrl + `flowType: 'pkce'`), `createThemisClient`, `clientFor(env)` and `supabase: ThemisClient | null`.
     **null = local-only mode** (no createClient call, no request, the P0 matrix). Every consumer must handle null.
-    Not imported by the UI yet (P2.10 wires it), so today it is tree-shaken out of `dist/`.
+    Since P2.10 it is imported ONLY by the lazy `src/features/auth/supabaseAuthClient.ts`, so it and supabase-js sit in
+    their own chunk, never in the entry.
+  - **Auth (P2.10, `src/features/auth/`):** the UI talks to the `AuthClient` interface (`authClient.ts`: initialize,
+    getUser, onAuthStateChange, sendMagicLink, googleSignInUrl, signOut, bootstrapMe), never to supabase-js.
+    `loadDefaultAuthClient` = `null` when `isLocalOnly`, else `import('./supabaseAuthClient')` (the adapter over the
+    themis-pinned client). `AuthProvider` loads it on the FIRST `useSession()` call, so only `/signin`,
+    `/auth/callback` and `/w/*` download it, never `/`. `AuthState` = local-only | loading | unavailable | signed-out
+    {initError} | signed-in {user}. Redirects go to `callbackUrl()` = `${origin}${BASE_URL}auth/callback`. The
+    callback page waits for supabase-js's own PKCE exchange (in `initialize()`), then `bootstrap_me()` once and
+    `navigate('/w/<id>', {replace})`; every failure renders a message (`describeAuthError`). Google uses
+    `skipBrowserRedirect` and the provider's injectable `redirect`. Local-only: `/signin` and `/auth/callback` show
+    "Coming soon" with no form. Tests: `fakeAuthClient.ts` (test-only), `auth.test.tsx`, `authClient.test.ts`,
+    `supabaseAuthClient.test.ts` (real supabase-js, scripted fetch). Bundle: entry 287.5 kB / 90.4 kB gzip, lazy chunk
+    215.7 kB / 55.5 kB gzip.
 - **Database (ADR-0002, P1 in progress, nothing applied live yet):** Hephaestus's LIVE Supabase
   project `lss-platform` (ref `atopkqykdmrcfvvcistc`, eu-west-1), schema **`themis` only**. Never
   `supabase db push`/`link`/`db reset`/`migration *` (Hephaestus owns
@@ -285,6 +300,16 @@ typecheck` · `npm run build` · `npm run e2e`. Deploy = push to `main` → `.gi
   P2.7 done (test-writer; committed locally, NOT pushed): the P2.5 + P2.6 probe cases are now 103 db:gate lines (GATE
   PASSED, 395 PASS) plus 20 prove-red sabotages (55/55 RED + control). One of them, accept_invite without the email
   check, is the one PLAN names. No bug was found. Chain green: 769 tests, build, check:bundle, e2e 6/6. Next: P2.8.
+  P1.14 (live apply) is done for units 1–6: schema `themis` exists live through 20260929000000; the invites RPCs
+  (unit 7) are NOT applied; `themis` is NOT exposed in the Data API, and the Themis domain is NOT on the shared Auth
+  redirect allow-list. So the deployed site stays local-only (no `VITE_SUPABASE_*` in the build).
+  P2.10 done (builder; committed locally, NOT pushed): the auth UI and session (§2), from the paused builder's
+  `src/features/auth/` (kept, with the AuthProvider fixed) plus the route wiring. Local-only: sign-in says "Coming
+  soon", and the matrix is unchanged. Configured (proven with a fake client, real supabase-js over a stubbed fetch, and
+  a configured build in Chromium against a placeholder URL): magic link + Google to `/auth/callback`, bootstrap_me →
+  `/w/<ws>`, sign-out, a persisted session, and error messages. Chain: 831 tests, GATE PASSED, check:bundle OK, e2e 9/9.
+  Open: a "Sign in" link in the matrix header needs `src/App.tsx` (P2.13's file); P2.9's `db.types.ts` does not exist
+  yet (the bootstrap_me result is checked at runtime).
 - **What's next / planned:** a SPEC for the AI analyst (❓ needs human input: which models,
   who pays for inference, whether decisions must be saved/shared → that decides Supabase + auth).
 
@@ -461,10 +486,36 @@ $f$` on one line is RED (it sees `auth` after the `=`). Keep `set search_path = 
   to null explicitly. Found in P2.6.
 - **In the leak-matrix harness, `s.sudo()` restores the actAs identity**, so the caller set before it is gone. Re-set
   the caller after every `sudo`, or an RPC test runs as the wrong user. Found in the P2.6 probe.
+- **An `<output>` element has the implicit ARIA role `status`.** A route-test location probe rendered as `<output>`
+  makes `getByRole('status')` ambiguous with a real progress line. Query the progress text instead. Found in P2.10.
+- **auth-js reads an error's `code` only if the response carries `x-supabase-api-version` (≥ 2024-01-01)**; otherwise
+  it reads the legacy `error_code`. A stubbed GoTrue error response without that header loses its code, so the test
+  fails for the stub's reason, not the code's. Real GoTrue sends it. Found in P2.10.
+- **A `vi.fn()` fake in a test can hide a provider bug that real supabase-js would mask by an event.** For example,
+  sign-out that relies on the SIGNED_OUT event looks fine against the real library. Test the provider's own state
+  changes with a fake that emits NOTHING unless told to. Found by a mutation in P2.10.
 
 ---
 
 ## 6. CHANGELOG (append-only — newest first)
+
+### 2026-09-29 (P2.10) — auth UI and session; the live site stays local-only
+
+- Did: reviewed the paused builder's untracked `src/features/auth/`. Kept all 7 files, fixed `AuthProvider.tsx` (lint
+  error; a listener could leak after unmount, and two dispose guards now exist), and added a "Coming soon" badge for
+  local-only mode. Wired `src/routes/` (AppRoutes → AuthProvider; pages.tsx PageShell; /signin, /auth/callback; the /w
+  page shows the account + Sign out when configured). Tests: auth.test.tsx (26), authClient.test.ts (27),
+  supabaseAuthClient.test.ts (9), routes.test.tsx updated; e2e auth-local-only.spec.ts (3), and the deep-links
+  callback heading changed. 7 mutations went RED (BUILD_LOG).
+- Exercised: a configured build (placeholder URL) in Chromium. `/` loaded only the entry chunk; `/signin` loaded the lazy
+  chunk; Google → `/auth/v1/authorize?provider=google&redirect_to=<origin>/auth/callback`, s256; the expired-link
+  callback showed its message. Bundle: entry 274.8 → 287.5 kB (87.1 → 90.4 gzip), lazy 215.7 kB (55.5 gzip).
+- Chain: lint ✔ · typecheck ✔ · test 831/831 · db:check ✔ · db:gate PASSED · build ✔ · check:bundle OK · e2e 9/9.
+  Nothing pushed; no live contact.
+- Decided: DECISIONS.md P2.10 (AuthClient seam, lazy per route, "coming soon", sign-out resets state itself).
+- Found: §5 (an `<output>` element has role status; the auth-js api-version header; fakes vs events).
+- Left off: a header "Sign in" link belongs with P2.13 (App.tsx). P2.8/P2.9 plus exposure and the redirect allow-list
+  come before the site can be configured. Then P2.11 / P2.13.
 
 ### 2026-09-29 (later still) — P1.14: units 1–6 of 7 LIVE; unit 7 refused
 
@@ -941,6 +992,8 @@ run-live.mjs,tsconfig.json}`; `e2e/local/{matrix,deep-links}.spec.ts` (6); scrip
   row locks, views/copies and dynamic-SQL reads stay forbidden (DECISIONS.md "P1.3 allow-list extension", `325f029`).
 - **2026-09-29:** invites bind to the caller's CONFIRMED `auth.users.email` and to the inviter's CURRENT
   authority; only an owner grants, changes or removes the owner role; the last owner stays (DECISIONS.md P2.6).
+- **2026-09-29:** auth goes through an `AuthClient` seam, and supabase-js loads lazily on the first `useSession()` (never
+  on `/`, never in a local-only build). Local-only mode shows sign-in as "Coming soon", with no form (DECISIONS.md P2.10).
 - **2026-09-28:** a 1 maps to 0, not 20% — "worst" must read as worst, or a poor option looks acceptable.
 - **2026-09-28:** no winner is named while any option is partly scored, and <5 points is "too close to call" — Themis must not manufacture confidence.
 

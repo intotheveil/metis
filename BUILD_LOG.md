@@ -1453,3 +1453,95 @@ Files (PLAN P2.7 scope only): `scripts/db-gate.mjs`, `scripts/db-gate/leak-matri
 check:bundle OK (11 files) · e2e 6/6. No bug found in the P2.5/P2.6 functions: every probe case held.
 
 **Next:** P2.8 (the auth-settings snapshot). CHECKPOINT P1-LIVE is still open.
+
+## 2026-09-29 — P2.10 Auth UI and session (builder)
+
+**Context.** Re-dispatched after the paused session. The previous builder left UNTRACKED partial work in
+`src/features/auth/` (7 files) and had not touched `src/routes/`. P2.9 (live ops, generated `db.types.ts`) has NOT run:
+`themis` is applied live (through 20260929000000) but not exposed in the Data API, and the Themis domain is not on the
+shared Auth redirect allow-list. The deployed site therefore stays LOCAL-ONLY (no `VITE_SUPABASE_*` in the build), and
+the configured path is proven with an injected fake client, a real supabase-js client over a stubbed fetch, and a
+configured build probed in Chromium against a placeholder URL. No live Supabase contact.
+
+**Review of the partial work (`src/features/auth/`).**
+- KEPT (sound, reviewed line by line): `authClient.ts` (the `AuthClient` seam, the lazy `loadDefaultAuthClient` =
+  `null` when local-only else `import('./supabaseAuthClient')`, `callbackUrl`, `readUrlError`, `hasAuthCode`,
+  `describeAuthError`), `supabaseAuthClient.ts` (the supabase-js adapter: `signInWithOtp` with `emailRedirectTo`,
+  `signInWithOAuth` google with `skipBrowserRedirect`, `rpc('bootstrap_me')` on the themis-pinned client),
+  `useSession.ts`, `AuthCallback.tsx`, `SignIn.tsx`, `AccountStatus.tsx`, `AuthCard.tsx`.
+- FIXED: `AuthProvider.tsx` failed lint (`no-useless-assignment`) and could subscribe to auth events after an unmount
+  (a leaked listener): it now has a `disposedRef` checked after the loader AND after initialize/getUser, and the
+  unmount cleanup clears the subscription. Both guards are pinned by a test (each one's removal goes RED).
+- CHANGED: local-only cards carry a gold "Coming soon" pill (`AuthCard` `badge`, `COMING_SOON`), so sign-in is shown
+  honestly as not available yet, with no form.
+- DISCARDED: nothing.
+
+**Wiring (`src/routes/*`).** `AppRoutes` wraps `useRoutes(routes)` in `<AuthProvider loader={props.authLoader}>`
+(`authLoader` is a test seam; omitted = the app's lazy loader). `pages.tsx`: a shared `PageShell` (round bust icon +
+gold wordmark header, the P2.3 look); `/signin` → `SignIn`, `/auth/callback` → `AuthCallback`; `/w/:id` keeps the
+"not live yet" text in local-only mode and, when configured, shows the id plus `AccountStatus` (who is signed in +
+Sign out). `/invite/:token` and not-found unchanged. `main.tsx` and `App.tsx` untouched.
+
+**Acceptance (PLAN P2.10) with evidence.**
+1. Magic link and "Continue with Google" both redirect to `${origin}/auth/callback`: `auth.test.tsx` (sendMagicLink and
+   googleSignInUrl called with `${origin}/auth/callback`, redirect performed); `supabaseAuthClient.test.ts` over real
+   supabase-js: POST `/auth/v1/otp?redirect_to=…/auth/callback` with `code_challenge` + `s256`; the Google URL is
+   `/auth/v1/authorize?provider=google&redirect_to=…/auth/callback&code_challenge_method=s256` and the PKCE verifier is
+   stored. Configured build in Chromium: clicking Google requested
+   `https://example-ref.supabase.invalid/auth/v1/authorize provider=google redirect_to=http://127.0.0.1:4199/auth/callback method=s256`.
+2. After the session is established the client calls `bootstrap_me()` and navigates to `/w/:ws`: `auth.test.tsx`
+   (initialize establishes the session → bootstrapMe once → location `/w/ws-personal`; a failing bootstrap shows a
+   message + "Try again" that recovers); the adapter test proves POST `/rest/v1/rpc/bootstrap_me` with
+   `Content-Profile: themis` and the user's bearer token, a PostgREST error keeps its code, and an empty result is an
+   error (never `/w/null`).
+3. Sign-out clears the session: the provider resets to signed-out without waiting for an event (in-app navigation to
+   /signin shows the form), and after a "reload" too; a sign-out error is shown and the user stays signed in; a
+   SIGNED_OUT from another tab flips the page. Adapter: POST `/auth/v1/logout` and the `sb-<ref>-auth-token` key is
+   removed from localStorage.
+4. Reloading keeps the user signed in: a fresh provider over a persisted session is signed in; adapter: a session in
+   localStorage is read with ZERO requests.
+5. Auth errors render a message, not a blank screen: expired link (`error_code=otp_expired` in the query), provider
+   error in the hash, a failed code exchange (`flow_state_not_found` → "different browser"), a code with no verifier,
+   no code at all, a loader/chunk failure, a rate limit, a disabled provider. Configured build in Chromium: the
+   expired-link callback rendered "This sign-in link has expired or has already been used. Request a new one."
+
+**Local-only mode.** `/signin` and `/auth/callback` say "Sign-in is not available yet … the decision matrix works in
+full" with a "Coming soon" pill, no textbox, no button; the callback leaves `?code=` untouched; `/w/:id` still says
+workspaces are not live. The matrix at `/` is unchanged (App.tsx untouched; its tests and e2e green).
+
+**Bundle (lazy supabase-js).**
+| build | entry `index-*.js` | lazy `supabaseAuthClient-*.js` |
+|---|---|---|
+| HEAD `cbc6d1c` (before) | 274.79 kB / 87.14 kB gzip | none |
+| P2.10 local-only | 287.52 kB / 90.44 kB gzip (+12.7 / +3.3) | 215.68 kB / 55.49 kB gzip, never requested |
+| P2.10 configured | 287.56 kB / 90.47 kB gzip | 215.68 kB / 55.49 kB gzip, requested only by /signin, /auth/callback, /w/* |
+Observed in Chromium on the configured build: `/` loaded only the entry chunk; `/signin` loaded entry + the lazy chunk.
+e2e on the local-only build: `/signin`, `/auth/callback?code=…` and `/w/ws-1` request exactly one script and never the
+lazy chunk. `index.html` has no modulepreload for it. check:bundle OK on both builds (12 files); `service_role` 0 hits
+in both chunks.
+
+**Tests.** NEW `src/features/auth/auth.test.tsx` (26: the real route table under an AuthProvider with a fake client;
+global fetch stubbed and asserted untouched), `supabaseAuthClient.test.ts` (9: real supabase-js, scripted fetch),
+`authClient.test.ts` (27: pure helpers), helper `fakeAuthClient.ts` (test-only). `src/routes/routes.test.tsx` updated
+for the new local-only copy and pinned to `authLoader={null}` (a developer `.env` can no longer change it). e2e: NEW
+`e2e/local/auth-local-only.spec.ts` (3); `deep-links.spec.ts` callback heading → "Sign-in unavailable".
+Mutations (each RED, then restored): callback navigate removed (2 red), callback path changed (7), dispose guard after
+initialize removed (1), `shouldCreateUser` false (1), provider sign-out keeps state (1). The first two survivors
+(the dispose guard, the sign-out reset) got the tests that now catch them.
+
+**Chain:** lint ✔ · typecheck ✔ · `npm test` 831/831 (15 files) · db:check PASS (8 migrations) · db:gate GATE PASSED ·
+build ✔ · check:bundle OK (12 files) · e2e 9/9.
+
+**Scope notes for the lead.**
+- Out of the declared files but asked for by the lead: `e2e/local/deep-links.spec.ts` (one heading) and the new
+  `e2e/local/auth-local-only.spec.ts`.
+- NOT done (out of scope): a "Sign in" entry point in the matrix header lives in `src/App.tsx`, which P2.10 does not
+  own. Today `/signin` is reachable only by URL. Suggest adding it with P2.13 (which owns App.tsx) once the site is
+  configured, so the live local-only site does not advertise a feature that says "coming soon".
+- P2.9's generated `db.types.ts` does not exist yet, so `rpc('bootstrap_me')` is untyped and the adapter checks the
+  result at runtime (`typeof data === 'string'`). Swap in the generated type when P2.9 lands.
+- Vitest: the very first `npx vitest run src/routes` of the session hit a 60 s startup error with no test run; every
+  later run (7) was clean. Not reproduced; noted in case it recurs.
+
+**Next:** test-writer pass for P2.10 if the lead wants one beyond the tests above; P2.8/P2.9 (operator-gated) before
+the site can be configured; then P2.11 / P2.13.
