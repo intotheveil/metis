@@ -466,6 +466,12 @@ $f$` on one line is RED (it sees `auth` after the `=`). Keep `set search_path = 
 
 ## 6. CHANGELOG (append-only — newest first)
 
+### 2026-09-29 (later) — P1.14 PARTIAL: units 1–2 of 7 applied live, then refused
+
+- The operator re-instructed "make live". A fresh pre-fingerprint matched 2026-09-29 in every section. **apply-1** (schema, ledger, touch_updated_at) and **apply-2** (tenancy: profiles, workspaces, memberships, invites, helpers, RLS, grants) COMMITTED on `atopkqykdmrcfvvcistc`. **apply-3** (decisions) was then refused by the permission classifier (Modify Shared Resources), and a following read-only check was refused as well. From here, the connector is unusable without an operator permission rule.
+- **State:** schema `themis` exists and is NOT exposed in the Data API, so it is inert to clients. The ledger `themis.schema_migrations` should hold 20260928200000 and 20260928210000. The post-fingerprint was NOT taken (refused); take it first on resume and compare against `ops-snapshots/sql/pre-fingerprint.json`.
+- **Resume:** once the operator allows `mcp__plugin_supabase_supabase__execute_sql` (or pastes the files into the lss-platform SQL Editor): run the ledger check, then `apply-3.sql` through `apply-7.sql` in order, then the fingerprint, the themis-vs-PGlite comparison, and the Hephaestus smoke. The files were built from `3773939`; migrations are unchanged through `a5c398e`.
+
 ### 2026-09-29 — PAUSED by the operator ("pause till tomorrow") — RESUME HERE
 
 - **Done and pushed (CI green, HEAD `011bc1c`):** P1.1–P1.13; P2.1–P2.7. Numbers: 769 Vitest tests, db:gate 395 PASS, prove-red 55/55, e2e 6/6. Live at https://themis.adeonanalytics.com, still local-only mode.
